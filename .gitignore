@@ -1,0 +1,26 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Credenciais e certificados
+.env
+*.pfx
+*.p12
+*.cer
+
+# Perfil persistente do Chrome (cache, dados de sessão)
+chrome_debug_profile/
+
+# Screenshots de debug gerados automaticamente
+_debug_*.png
+
+# Logs de erro
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/

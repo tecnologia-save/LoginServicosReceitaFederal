@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "servicos-rf-login"
+version = "0.1.0"
+description = "Login automatizado no portal Serviços da Receita Federal via Patchright com suporte a certificado digital"
+requires-python = ">=3.10"
+dependencies = [
+    "patchright",
+    "python-dotenv",
+    "captcha-uipath @ file:///C:/Users/matheus.antunes/Desktop/Automações Python/CaptchaSolver",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["servicos_rf_login*"]
