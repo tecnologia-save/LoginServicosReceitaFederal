@@ -322,7 +322,8 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
 
 def _ja_logado(page) -> bool:
     """Retorna True se a URL atual indicar que o login foi concluído."""
-    return "receita.fazenda.gov.br" in page.url
+    u = page.url
+    return "receita.fazenda.gov.br" in u or "receitafederal.gov.br" in u
 
 
 def _acesso_bloqueado(page) -> bool:
