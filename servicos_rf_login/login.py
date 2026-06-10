@@ -28,7 +28,7 @@ import json
 import os
 import random as _random
 import re
-import threading
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -293,63 +293,30 @@ def _clicar_certificado(page) -> bool:
     return False
 
 
-def _mover_mouse_fundo(parar: threading.Event) -> None:
-    """Thread de fundo: move o mouse via Windows API enquanto o captcha é resolvido.
+def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
+    """Tenta resolver o hCaptcha até `max_attempts` vezes.
 
-    Usa ctypes/user32 em vez de page.mouse.move() para evitar o erro
-    greenlet.error: Cannot switch to a different thread — Patchright's sync API
-    usa greenlets vinculados à thread principal e não pode ser chamado de threads
-    secundárias.
+    Move o mouse uma única vez antes de resolver para evitar detecção de automação.
     """
+    print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
     try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        screen_w = user32.GetSystemMetrics(0) or 1920
-        screen_h = user32.GetSystemMetrics(1) or 1080
-
-        class _POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-        pt = _POINT()
-        user32.GetCursorPos(ctypes.byref(pt))
-        x, y = pt.x, pt.y
-
-        while not parar.is_set():
-            tx = _random.randint(100, screen_w - 100)
-            ty = _random.randint(100, screen_h - 100)
-            steps = _random.randint(10, 25)
-            for i in range(1, steps + 1):
-                if parar.is_set():
-                    break
-                nx = int(x + (tx - x) * i / steps)
-                ny = int(y + (ty - y) * i / steps)
-                user32.SetCursorPos(nx, ny)
-                parar.wait(0.03 + _random.uniform(0, 0.03))
-            x, y = tx, ty
-            parar.wait(_random.uniform(0.2, 0.7))
+        vp = page.viewport_size or {"width": 1280, "height": 720}
+        page.mouse.move(
+            _random.randint(100, vp["width"] - 100),
+            _random.randint(100, vp["height"] - 100),
+        )
     except Exception:
         pass
 
-
-def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
-    """Tenta resolver o hCaptcha até `max_attempts` vezes com mouse em movimento de fundo."""
-    print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
-    parar = threading.Event()
-    t = threading.Thread(target=_mover_mouse_fundo, args=(parar,), daemon=True)
-    t.start()
-    try:
-        for tentativa in range(1, max_attempts + 1):
-            try:
-                resultado = solve_hcaptcha(page)
-                if resultado:
-                    print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: OK (resolvido ou ausente).")
-                    return True
-                print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False.")
-            except Exception as e:
-                print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: {type(e).__name__}: {e}")
-    finally:
-        parar.set()
-        t.join(timeout=2)
+    for tentativa in range(1, max_attempts + 1):
+        try:
+            resultado = solve_hcaptcha(page)
+            if resultado:
+                print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: OK (resolvido ou ausente).")
+                return True
+            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False.")
+        except Exception as e:
+            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: {type(e).__name__}: {e}")
     return False
 
 
@@ -406,229 +373,63 @@ def _normalizar_cnpj(valor: str) -> str:
 def _representar_cnpj_procurador(page, cnpj: str) -> bool:
     """Representa o CNPJ como Procurador no portal Serviços RF.
 
-    Abre o menu do avatar, preenche o CNPJ, seleciona 'Procurador' e clica
-    em 'Representar'. Trata captcha (popup ou inline) e mensagens anti-bot.
-    Até 3 tentativas.
-
-    Returns True se representação confirmada, False se falhou.
+    Fluxo: abre menu avatar → preenche CNPJ → seleciona Procurador → clica Representar.
+    Até 3 tentativas em caso de falha.
     """
     cnpj = _normalizar_cnpj(cnpj)
+    print(f"[cnpj] Iniciando representação do CNPJ {cnpj} como Procurador...")
 
-    _PALAVRAS_ERRO_PERMANENTE = (
-        "procuração", "procuracao", "vencid", "expirad",
-        "não possui", "sem procuração", "não encontrad",
-        "cnpj inválid", "não autorizado",
-    )
-
-    _MAX_TENTATIVAS = 3
-    for tentativa in range(1, _MAX_TENTATIVAS + 1):
+    for tentativa in range(1, 4):
         if tentativa > 1:
-            print(f"    [cnpj] Retentando representação (tentativa {tentativa}/{_MAX_TENTATIVAS})...")
+            print(f"[cnpj] Tentativa {tentativa}/3...")
             try:
                 page.keyboard.press("Escape")
             except Exception:
                 pass
-
-        # ── Abre menu do avatar ───────────────────────────────────────────────
-        print("    [cnpj] Abrindo menu do certificado...")
-        avatar = page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').first
-        avatar.wait_for(state="visible", timeout=15_000)
-        avatar.click()
-
-        # ── Preenche CNPJ ─────────────────────────────────────────────────────
-        print(f"    [cnpj] Digitando CNPJ {cnpj}...")
-        campo_cnpj = page.locator('xpath=//*[@id="input-representar-cpfcnpj"]').first
-        campo_cnpj.wait_for(state="visible", timeout=10_000)
-        campo_cnpj.fill(cnpj)
-
-        # ── Seleciona "Procurador" ────────────────────────────────────────────
-        print("    [cnpj] Selecionando 'Procurador'...")
-        ng_select = page.locator(
-            'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]/br-select'
-            '/div/div/div[1]/ng-select'
-        ).first
-        ng_select.wait_for(state="visible", timeout=10_000)
-        ng_select.click()
-
-        opcao = page.get_by_role("option", name="Procurador").first
-        opcao.wait_for(state="visible", timeout=5_000)
-        opcao.click()
-
-        # ── Clica Representar ─────────────────────────────────────────────────
-        print("    [cnpj] Clicando em 'Representar'...")
-        btn_representar = page.locator(
-            'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
-        ).first
-        btn_representar.wait_for(state="visible", timeout=10_000)
-
-        _popups: list = []
-
-        def _on_new_page(p):
-            _popups.append(p)
-
-        page.context.on("page", _on_new_page)
-        btn_representar.click()
-
-        # ── Aguarda "Carregando" aparecer ─────────────────────────────────────
-        _carregando = page.locator(
-            'xpath=/html/body/app-root/mf-portal-layout/portal-main-layout'
-            '/br-loading/div/div/a/div[2]'
-        ).first
-        _carregando_apareceu = False
-        try:
-            _carregando.wait_for(state="visible", timeout=8_000)
-            _carregando_apareceu = True
-        except Exception:
-            pass
-
-        # ── Poll: erro / popup / captcha inline / CNPJ confirmado ────────────
-        _deadline     = time.time() + 60
-        captcha_tipo  = None
-        _erro_bloqueado = False
-
-        while time.time() < _deadline:
-            # Mensagem de erro do portal
-            _err_msg = page.evaluate(
-                "() => { const e = document.querySelector('span.mensagemErro'); "
-                "return e ? e.textContent.trim() : ''; }"
-            )
-            if _err_msg:
-                _err_lower = _err_msg.lower()
-                if "automatizado" in _err_lower or "bloqueado" in _err_lower:
-                    print(f"    [cnpj] Acesso bloqueado: '{_err_msg}'")
-                    _erro_bloqueado = True
-                    break
-                if any(p in _err_lower for p in _PALAVRAS_ERRO_PERMANENTE):
-                    print(f"    [cnpj] Erro permanente: '{_err_msg}'")
-                    try:
-                        page.context.remove_listener("page", _on_new_page)
-                    except Exception:
-                        pass
-                    return False
-
-            # Popup (captcha em nova janela)
-            if _popups:
-                captcha_tipo = "popup"
-                break
-
-            # Captcha challenge inline
-            _hc_frames = [
-                f for f in page.frames
-                if "hcaptcha.com" in (f.url or "") and "frame=challenge" in (f.url or "")
-            ]
-            for _hf in _hc_frames:
-                try:
-                    _txt = _hf.evaluate("""() => {
-                        const c = document.querySelector('.challenge-container');
-                        if (!c) return null;
-                        const r = c.getBoundingClientRect();
-                        if (r.width < 100 || r.height < 100) return null;
-                        const p = document.querySelector('.prompt-text');
-                        if (!p || !p.textContent.trim()) return null;
-                        const b = document.querySelector('.button-submit');
-                        if (!b || b.getAttribute('aria-disabled') === 'true') return null;
-                        return p.textContent.trim();
-                    }""")
-                    if _txt:
-                        print(f"    [cnpj] Captcha inline detectado: '{_txt}'")
-                        captcha_tipo = "inline"
-                        break
-                except Exception:
-                    pass
-            if captcha_tipo:
-                break
-
-            # CNPJ confirmado no cabeçalho
-            _cnpj_pag = page.evaluate(
-                "() => {"
-                "  const h = document.querySelector('.ni-pessoa:not(.ni-representante)');"
-                "  if (h) return h.textContent.trim();"
-                "  const r = document.querySelector('.ni-representacao');"
-                "  return r ? r.textContent.trim() : '';"
-                "}"
-            )
-            if _normalizar_cnpj(_cnpj_pag) == cnpj:
-                print(f"    [cnpj] CNPJ {cnpj} representado como Procurador.")
-                try:
-                    page.context.remove_listener("page", _on_new_page)
-                except Exception:
-                    pass
-                return True
-
-            # "Carregando" sumiu = servidor respondeu sem captcha
-            if _carregando_apareceu and not _carregando.is_visible():
-                break
-
-            time.sleep(0.8)
+            time.sleep(1)
 
         try:
-            page.context.remove_listener("page", _on_new_page)
-        except Exception:
-            pass
+            # 1. Abre menu do avatar
+            print("[cnpj] Clicando no avatar...")
+            avatar = page.locator('#avatar-dropdown-trigger').first
+            avatar.wait_for(state="visible", timeout=20_000)
+            avatar.click()
 
-        # Erro anti-bot → retentar
-        if _erro_bloqueado:
-            if tentativa < _MAX_TENTATIVAS:
-                continue
-            print("    [cnpj] Acesso bloqueado após todas as tentativas.")
-            return False
+            # 2. Preenche CNPJ
+            print(f"[cnpj] Preenchendo CNPJ {cnpj}...")
+            campo = page.locator('#input-representar-cpfcnpj').first
+            campo.wait_for(state="visible", timeout=10_000)
+            campo.fill(cnpj)
 
-        # ── Resolve captcha ───────────────────────────────────────────────────
-        if captcha_tipo == "popup":
-            popup_page = _popups[0]
-            print("    [cnpj] Resolvendo captcha no popup...")
-            ok = _try_solve_captcha(popup_page, "captcha-repr-popup")
-            try:
-                popup_page.wait_for_close(timeout=15_000)
-            except Exception:
-                pass
-            if not ok and tentativa < _MAX_TENTATIVAS:
-                continue
-        elif captcha_tipo == "inline":
-            ok = _try_solve_captcha(page, "captcha-repr-inline")
-            if not ok and tentativa < _MAX_TENTATIVAS:
-                continue
+            # 3. Seleciona "Procurador" no dropdown
+            print("[cnpj] Selecionando Procurador...")
+            ng_select = page.locator(
+                'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]'
+                '/br-select/div/div/div[1]/ng-select'
+            ).first
+            ng_select.wait_for(state="visible", timeout=10_000)
+            ng_select.click()
 
-        # Aguarda "Carregando" sumir após captcha
-        if captcha_tipo:
-            try:
-                _carregando.wait_for(state="hidden", timeout=30_000)
-            except Exception:
-                pass
+            opcao = page.get_by_role("option", name="Procurador").first
+            opcao.wait_for(state="visible", timeout=5_000)
+            opcao.click()
 
-        # Erro anti-bot pós-captcha
-        _err_pos = page.evaluate(
-            "() => { const e = document.querySelector('span.mensagemErro'); "
-            "return e ? e.textContent.trim() : ''; }"
-        )
-        if _err_pos:
-            _ep_lower = _err_pos.lower()
-            if "automatizado" in _ep_lower or "bloqueado" in _ep_lower:
-                if tentativa < _MAX_TENTATIVAS:
-                    continue
-                print(f"    [cnpj] Bloqueado após captcha: '{_err_pos}'")
+            # 4. Clica Representar
+            print("[cnpj] Clicando em Representar...")
+            btn = page.locator(
+                'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
+            ).first
+            btn.wait_for(state="visible", timeout=10_000)
+            btn.click()
+
+            print("[cnpj] Representação enviada.")
+            return True
+
+        except Exception as e:
+            print(f"[cnpj] Erro na tentativa {tentativa}/3: {type(e).__name__}: {e}")
+            if tentativa == 3:
                 return False
 
-        # ── Confirma CNPJ no cabeçalho ────────────────────────────────────────
-        for _ in range(10):
-            _cnpj_final = page.evaluate(
-                "() => {"
-                "  const h = document.querySelector('.ni-pessoa:not(.ni-representante)');"
-                "  if (h) return h.textContent.trim();"
-                "  const r = document.querySelector('.ni-representacao');"
-                "  return r ? r.textContent.trim() : '';"
-                "}"
-            )
-            if _normalizar_cnpj(_cnpj_final) == cnpj:
-                print(f"    [cnpj] CNPJ {cnpj} representado como Procurador.")
-                return True
-            time.sleep(0.5)
-
-        if tentativa < _MAX_TENTATIVAS:
-            print("    [cnpj] CNPJ não confirmado no cabeçalho. Retentando...")
-            continue
-
-    print(f"    [cnpj] Falha ao representar CNPJ {cnpj} após {_MAX_TENTATIVAS} tentativas.")
     return False
 
 
