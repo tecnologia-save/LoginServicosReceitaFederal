@@ -295,27 +295,6 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
     Move o mouse uma única vez antes de resolver para evitar detecção de automação.
     """
     print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
-    try:
-        import ctypes
-        _u32 = ctypes.windll.user32
-
-        class _PT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-        _sw = _u32.GetSystemMetrics(0) or 1920
-        _sh = _u32.GetSystemMetrics(1) or 1080
-        pt = _PT()
-        _u32.GetCursorPos(ctypes.byref(pt))
-        x, y = pt.x, pt.y
-        tx = _random.randint(150, _sw - 150)
-        ty = _random.randint(150, _sh - 150)
-        steps = _random.randint(18, 28)
-        for i in range(1, steps + 1):
-            _u32.SetCursorPos(int(x + (tx - x) * i / steps), int(y + (ty - y) * i / steps))
-            time.sleep(_random.uniform(0.008, 0.018))
-    except Exception:
-        pass
-
     for tentativa in range(1, max_attempts + 1):
         try:
             resultado = solve_hcaptcha(page)
