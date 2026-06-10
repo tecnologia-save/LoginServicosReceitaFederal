@@ -296,11 +296,11 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
     """
     print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
     try:
-        vp = page.viewport_size or {"width": 1280, "height": 720}
-        page.mouse.move(
-            _random.randint(100, vp["width"] - 100),
-            _random.randint(100, vp["height"] - 100),
-        )
+        import ctypes
+        _u32 = ctypes.windll.user32
+        _sw  = _u32.GetSystemMetrics(0) or 1920
+        _sh  = _u32.GetSystemMetrics(1) or 1080
+        _u32.SetCursorPos(_random.randint(100, _sw - 100), _random.randint(100, _sh - 100))
     except Exception:
         pass
 
