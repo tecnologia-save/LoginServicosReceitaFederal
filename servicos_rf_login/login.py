@@ -322,7 +322,7 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
 
 def _ja_logado(page) -> bool:
     """Retorna True se a URL atual indicar que o login foi concluído."""
-    return SERVICOS_RF_DOMAIN in page.url
+    return "receita.fazenda.gov.br" in page.url
 
 
 def _acesso_bloqueado(page) -> bool:
@@ -574,7 +574,6 @@ def main(
 
     if _ja_logado(page):
         print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
-        return p, context, page
 
     # --- Resolver captcha após "Entrar com gov.br" (se aparecer) ---
     if not _try_solve_captcha(page, "captcha-pos-govbr"):
@@ -593,7 +592,6 @@ def main(
 
     if _ja_logado(page):
         print("  -> Login concluído após captcha gov.br.")
-        return p, context, page
 
     # --- Clicar em "Seu certificado digital" ---
     MAX_TENTATIVAS_CERT = 3
@@ -648,19 +646,19 @@ def main(
             continue
 
         # Aguarda redirecionamento final (até 60s)
-        print("Aguardando redirecionamento final para servicos.receita.fazenda.gov.br (até 60s)...")
-        try:
-            page.wait_for_url(
-                lambda u: SERVICOS_RF_DOMAIN in u,
-                timeout=60_000,
-            )
-            print(f"  -> URL: {page.url}")
-            break
-        except Exception as e:
-            print(f"  -> redirecionamento não ocorreu ainda: {type(e).__name__}: {e}")
+        print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
+        for _seg in range(60):
+            _url_atual = page.url
+            print(f"  -> ({_seg + 1}s) URL: {_url_atual}")
+            if _ja_logado(page):
+                print("  -> Redirecionamento confirmado.")
+                break
+            time.sleep(1)
+        else:
+            print(f"  -> Timeout. URL final: {page.url}")
             if tentativa == MAX_TENTATIVAS_CERT:
                 registrar_erro(
-                    f"Login: redirecionamento para Serviços RF não ocorreu. URL atual: {page.url}"
+                    f"Login: redirecionamento não ocorreu. URL atual: {page.url}"
                 )
                 try:
                     shot = str(project_dir / "_debug_pos_cert.png")
@@ -669,6 +667,8 @@ def main(
                 except Exception:
                     pass
                 return None
+            continue
+        break
 
     print(f"Login nos Serviços RF concluído. URL final: {page.url}")
 
