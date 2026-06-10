@@ -531,7 +531,6 @@ def main(
     # --- Verificar sessão já ativa ---
     if _ja_logado(page):
         print("  -> Sessão ativa detectada. Pulando etapas de autenticação.")
-        return p, context, page
 
     # --- 1ª navegação para a URL de login ---
     print(f"[1ª navegação] Abrindo {SERVICOS_RF_URL} ...")
@@ -546,7 +545,6 @@ def main(
 
     if _ja_logado(page):
         print("  -> Redirecionado automaticamente. Login concluído.")
-        return p, context, page
 
     # --- Clicar em "Entrar com gov.br" ---
     print("Clicando em 'Entrar com gov.br'...")
