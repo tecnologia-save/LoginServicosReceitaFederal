@@ -293,38 +293,49 @@ def _clicar_certificado(page) -> bool:
     return False
 
 
-def _mover_mouse_fundo(page, parar: threading.Event) -> None:
-    """Thread de fundo: move o mouse em padrão suave enquanto o captcha é resolvido."""
+def _mover_mouse_fundo(parar: threading.Event) -> None:
+    """Thread de fundo: move o mouse via Windows API enquanto o captcha é resolvido.
+
+    Usa ctypes/user32 em vez de page.mouse.move() para evitar o erro
+    greenlet.error: Cannot switch to a different thread — Patchright's sync API
+    usa greenlets vinculados à thread principal e não pode ser chamado de threads
+    secundárias.
+    """
     try:
-        vp = page.viewport_size or {"width": 1280, "height": 720}
-    except Exception:
-        vp = {"width": 1280, "height": 720}
-    w, h = vp["width"], vp["height"]
-    x, y = w // 2, h // 2
-    while not parar.is_set():
-        try:
-            tx = _random.randint(80, w - 80)
-            ty = _random.randint(80, h - 80)
+        import ctypes
+        user32 = ctypes.windll.user32
+        screen_w = user32.GetSystemMetrics(0) or 1920
+        screen_h = user32.GetSystemMetrics(1) or 1080
+
+        class _POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        pt = _POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        x, y = pt.x, pt.y
+
+        while not parar.is_set():
+            tx = _random.randint(100, screen_w - 100)
+            ty = _random.randint(100, screen_h - 100)
             steps = _random.randint(10, 25)
             for i in range(1, steps + 1):
                 if parar.is_set():
                     break
-                page.mouse.move(
-                    int(x + (tx - x) * i / steps),
-                    int(y + (ty - y) * i / steps),
-                )
+                nx = int(x + (tx - x) * i / steps)
+                ny = int(y + (ty - y) * i / steps)
+                user32.SetCursorPos(nx, ny)
                 parar.wait(0.03 + _random.uniform(0, 0.03))
             x, y = tx, ty
             parar.wait(_random.uniform(0.2, 0.7))
-        except Exception:
-            parar.wait(0.1)
+    except Exception:
+        pass
 
 
 def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
     """Tenta resolver o hCaptcha até `max_attempts` vezes com mouse em movimento de fundo."""
     print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
     parar = threading.Event()
-    t = threading.Thread(target=_mover_mouse_fundo, args=(page, parar), daemon=True)
+    t = threading.Thread(target=_mover_mouse_fundo, args=(parar,), daemon=True)
     t.start()
     try:
         for tentativa in range(1, max_attempts + 1):
