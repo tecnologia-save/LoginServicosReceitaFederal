@@ -298,9 +298,21 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
     try:
         import ctypes
         _u32 = ctypes.windll.user32
-        _sw  = _u32.GetSystemMetrics(0) or 1920
-        _sh  = _u32.GetSystemMetrics(1) or 1080
-        _u32.SetCursorPos(_random.randint(100, _sw - 100), _random.randint(100, _sh - 100))
+
+        class _PT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        _sw = _u32.GetSystemMetrics(0) or 1920
+        _sh = _u32.GetSystemMetrics(1) or 1080
+        pt = _PT()
+        _u32.GetCursorPos(ctypes.byref(pt))
+        x, y = pt.x, pt.y
+        tx = _random.randint(150, _sw - 150)
+        ty = _random.randint(150, _sh - 150)
+        steps = _random.randint(18, 28)
+        for i in range(1, steps + 1):
+            _u32.SetCursorPos(int(x + (tx - x) * i / steps), int(y + (ty - y) * i / steps))
+            time.sleep(_random.uniform(0.008, 0.018))
     except Exception:
         pass
 
