@@ -41,11 +41,7 @@ from captcha_uipath import solve_hcaptcha
 from .log_manager import registrar_erro
 
 # URL de login dos Serviços da Receita Federal (gov.br SSO)
-SERVICOS_RF_URL = (
-    "https://sso.acesso.gov.br/login"
-    "?client_id=p-servicos.receitafederal.gov.br"
-    "&authorization_id=19e64701b49"
-)
+SERVICOS_RF_URL = "https://servicos.receitafederal.gov.br/"
 
 # Domínio de sucesso — quando a URL contiver isso, o login foi concluído
 SERVICOS_RF_DOMAIN = "servicos.receita.fazenda.gov.br"
