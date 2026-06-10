@@ -1,22 +1,24 @@
-"""Script de teste — Login nos Serviços da Receita Federal.
+"""Script de exemplo — Login nos Serviços da Receita Federal.
 
-Edite CERT_NAME abaixo (ou configure o .env) e execute:
+Edite CERT_NAME e CNPJ abaixo (ou configure o .env) e execute:
     .venv\Scripts\python main.py
 """
 from servicos_rf_login import fazer_login
 
-# ── Opção A: nome do certificado (recomendado) ─────────────────────────────
-# O código busca em C:\Certificados e lê a senha do senhas.json.
-# Exemplos: "DSR", "Save Tecnologia", "Cristiano", "GSH"
+# ── Login simples (sem representar CNPJ) ──────────────────────────────────
 resultado = fazer_login(cert_name="DSR")
 
-# ── Opção B: lê CERT_NAME do .env (descomente e comente a opção A) ─────────
-# resultado = fazer_login()
+# ── Login + representação de CNPJ como Procurador ─────────────────────────
+# resultado = fazer_login(cert_name="DSR", cnpj="12345678000190")
 
-# ── Opção C: caminho e senha explícitos ────────────────────────────────────
+# ── Via .env (CERT_NAME configurado no .env) ─────────────────────────────
+# resultado = fazer_login(cnpj="12345678000190")
+
+# ── Via caminho explícito ─────────────────────────────────────────────────
 # resultado = fazer_login(
 #     cert_pfx_path=r"C:\Certificados\DSR.pfx",
 #     cert_pfx_passphrase="123456",
+#     cnpj="12345678000190",
 # )
 
 # ── Resultado ──────────────────────────────────────────────────────────────

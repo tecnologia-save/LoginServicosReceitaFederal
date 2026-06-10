@@ -27,6 +27,7 @@ import difflib
 import json
 import os
 import random as _random
+import re
 import threading
 from pathlib import Path
 
@@ -383,6 +384,244 @@ def _recuperar_acesso_bloqueado(page) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Representação de CNPJ
+# ---------------------------------------------------------------------------
+
+def _normalizar_cnpj(valor: str) -> str:
+    """Remove formatação e retorna 14 dígitos."""
+    return re.sub(r"\D", "", str(valor)).zfill(14)
+
+
+def _representar_cnpj_procurador(page, cnpj: str) -> bool:
+    """Representa o CNPJ como Procurador no portal Serviços RF.
+
+    Abre o menu do avatar, preenche o CNPJ, seleciona 'Procurador' e clica
+    em 'Representar'. Trata captcha (popup ou inline) e mensagens anti-bot.
+    Até 3 tentativas.
+
+    Returns True se representação confirmada, False se falhou.
+    """
+    cnpj = _normalizar_cnpj(cnpj)
+
+    _PALAVRAS_ERRO_PERMANENTE = (
+        "procuração", "procuracao", "vencid", "expirad",
+        "não possui", "sem procuração", "não encontrad",
+        "cnpj inválid", "não autorizado",
+    )
+
+    _MAX_TENTATIVAS = 3
+    for tentativa in range(1, _MAX_TENTATIVAS + 1):
+        if tentativa > 1:
+            print(f"    [cnpj] Retentando representação (tentativa {tentativa}/{_MAX_TENTATIVAS})...")
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+
+        # ── Abre menu do avatar ───────────────────────────────────────────────
+        print("    [cnpj] Abrindo menu do certificado...")
+        avatar = page.locator('xpath=//*[@id="avatar-dropdown-trigger"]').first
+        avatar.wait_for(state="visible", timeout=15_000)
+        avatar.click()
+
+        # ── Preenche CNPJ ─────────────────────────────────────────────────────
+        print(f"    [cnpj] Digitando CNPJ {cnpj}...")
+        campo_cnpj = page.locator('xpath=//*[@id="input-representar-cpfcnpj"]').first
+        campo_cnpj.wait_for(state="visible", timeout=10_000)
+        campo_cnpj.fill(cnpj)
+
+        # ── Seleciona "Procurador" ────────────────────────────────────────────
+        print("    [cnpj] Selecionando 'Procurador'...")
+        ng_select = page.locator(
+            'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]/br-select'
+            '/div/div/div[1]/ng-select'
+        ).first
+        ng_select.wait_for(state="visible", timeout=10_000)
+        ng_select.click()
+
+        opcao = page.get_by_role("option", name="Procurador").first
+        opcao.wait_for(state="visible", timeout=5_000)
+        opcao.click()
+
+        # ── Clica Representar ─────────────────────────────────────────────────
+        print("    [cnpj] Clicando em 'Representar'...")
+        btn_representar = page.locator(
+            'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
+        ).first
+        btn_representar.wait_for(state="visible", timeout=10_000)
+
+        _popups: list = []
+
+        def _on_new_page(p):
+            _popups.append(p)
+
+        page.context.on("page", _on_new_page)
+        btn_representar.click()
+
+        # ── Aguarda "Carregando" aparecer ─────────────────────────────────────
+        _carregando = page.locator(
+            'xpath=/html/body/app-root/mf-portal-layout/portal-main-layout'
+            '/br-loading/div/div/a/div[2]'
+        ).first
+        _carregando_apareceu = False
+        try:
+            _carregando.wait_for(state="visible", timeout=8_000)
+            _carregando_apareceu = True
+        except Exception:
+            pass
+
+        # ── Poll: erro / popup / captcha inline / CNPJ confirmado ────────────
+        _deadline     = time.time() + 60
+        captcha_tipo  = None
+        _erro_bloqueado = False
+
+        while time.time() < _deadline:
+            # Mensagem de erro do portal
+            _err_msg = page.evaluate(
+                "() => { const e = document.querySelector('span.mensagemErro'); "
+                "return e ? e.textContent.trim() : ''; }"
+            )
+            if _err_msg:
+                _err_lower = _err_msg.lower()
+                if "automatizado" in _err_lower or "bloqueado" in _err_lower:
+                    print(f"    [cnpj] Acesso bloqueado: '{_err_msg}'")
+                    _erro_bloqueado = True
+                    break
+                if any(p in _err_lower for p in _PALAVRAS_ERRO_PERMANENTE):
+                    print(f"    [cnpj] Erro permanente: '{_err_msg}'")
+                    try:
+                        page.context.remove_listener("page", _on_new_page)
+                    except Exception:
+                        pass
+                    return False
+
+            # Popup (captcha em nova janela)
+            if _popups:
+                captcha_tipo = "popup"
+                break
+
+            # Captcha challenge inline
+            _hc_frames = [
+                f for f in page.frames
+                if "hcaptcha.com" in (f.url or "") and "frame=challenge" in (f.url or "")
+            ]
+            for _hf in _hc_frames:
+                try:
+                    _txt = _hf.evaluate("""() => {
+                        const c = document.querySelector('.challenge-container');
+                        if (!c) return null;
+                        const r = c.getBoundingClientRect();
+                        if (r.width < 100 || r.height < 100) return null;
+                        const p = document.querySelector('.prompt-text');
+                        if (!p || !p.textContent.trim()) return null;
+                        const b = document.querySelector('.button-submit');
+                        if (!b || b.getAttribute('aria-disabled') === 'true') return null;
+                        return p.textContent.trim();
+                    }""")
+                    if _txt:
+                        print(f"    [cnpj] Captcha inline detectado: '{_txt}'")
+                        captcha_tipo = "inline"
+                        break
+                except Exception:
+                    pass
+            if captcha_tipo:
+                break
+
+            # CNPJ confirmado no cabeçalho
+            _cnpj_pag = page.evaluate(
+                "() => {"
+                "  const h = document.querySelector('.ni-pessoa:not(.ni-representante)');"
+                "  if (h) return h.textContent.trim();"
+                "  const r = document.querySelector('.ni-representacao');"
+                "  return r ? r.textContent.trim() : '';"
+                "}"
+            )
+            if _normalizar_cnpj(_cnpj_pag) == cnpj:
+                print(f"    [cnpj] CNPJ {cnpj} representado como Procurador.")
+                try:
+                    page.context.remove_listener("page", _on_new_page)
+                except Exception:
+                    pass
+                return True
+
+            # "Carregando" sumiu = servidor respondeu sem captcha
+            if _carregando_apareceu and not _carregando.is_visible():
+                break
+
+            time.sleep(0.8)
+
+        try:
+            page.context.remove_listener("page", _on_new_page)
+        except Exception:
+            pass
+
+        # Erro anti-bot → retentar
+        if _erro_bloqueado:
+            if tentativa < _MAX_TENTATIVAS:
+                continue
+            print("    [cnpj] Acesso bloqueado após todas as tentativas.")
+            return False
+
+        # ── Resolve captcha ───────────────────────────────────────────────────
+        if captcha_tipo == "popup":
+            popup_page = _popups[0]
+            print("    [cnpj] Resolvendo captcha no popup...")
+            ok = _try_solve_captcha(popup_page, "captcha-repr-popup")
+            try:
+                popup_page.wait_for_close(timeout=15_000)
+            except Exception:
+                pass
+            if not ok and tentativa < _MAX_TENTATIVAS:
+                continue
+        elif captcha_tipo == "inline":
+            ok = _try_solve_captcha(page, "captcha-repr-inline")
+            if not ok and tentativa < _MAX_TENTATIVAS:
+                continue
+
+        # Aguarda "Carregando" sumir após captcha
+        if captcha_tipo:
+            try:
+                _carregando.wait_for(state="hidden", timeout=30_000)
+            except Exception:
+                pass
+
+        # Erro anti-bot pós-captcha
+        _err_pos = page.evaluate(
+            "() => { const e = document.querySelector('span.mensagemErro'); "
+            "return e ? e.textContent.trim() : ''; }"
+        )
+        if _err_pos:
+            _ep_lower = _err_pos.lower()
+            if "automatizado" in _ep_lower or "bloqueado" in _ep_lower:
+                if tentativa < _MAX_TENTATIVAS:
+                    continue
+                print(f"    [cnpj] Bloqueado após captcha: '{_err_pos}'")
+                return False
+
+        # ── Confirma CNPJ no cabeçalho ────────────────────────────────────────
+        for _ in range(10):
+            _cnpj_final = page.evaluate(
+                "() => {"
+                "  const h = document.querySelector('.ni-pessoa:not(.ni-representante)');"
+                "  if (h) return h.textContent.trim();"
+                "  const r = document.querySelector('.ni-representacao');"
+                "  return r ? r.textContent.trim() : '';"
+                "}"
+            )
+            if _normalizar_cnpj(_cnpj_final) == cnpj:
+                print(f"    [cnpj] CNPJ {cnpj} representado como Procurador.")
+                return True
+            time.sleep(0.5)
+
+        if tentativa < _MAX_TENTATIVAS:
+            print("    [cnpj] CNPJ não confirmado no cabeçalho. Retentando...")
+            continue
+
+    print(f"    [cnpj] Falha ao representar CNPJ {cnpj} após {_MAX_TENTATIVAS} tentativas.")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Função principal
 # ---------------------------------------------------------------------------
 
@@ -391,6 +630,7 @@ def main(
     cert_pfx_path: str | None = None,
     cert_pfx_passphrase: str | None = None,
     project_dir: "Path | str | None" = None,
+    cnpj: str | None = None,
 ):
     """Realiza o login nos Serviços da Receita Federal e retorna (playwright, context, page).
 
@@ -414,28 +654,26 @@ def main(
             Diretório do projeto chamador. Usado para localizar o .env e
             salvar o perfil do Chrome. Padrão: Path.cwd().
 
+        cnpj:
+            CNPJ da empresa a representar como Procurador após o login.
+            Aceita com ou sem formatação (ex.: "12.345.678/0001-90" ou "12345678000190").
+            Se None, a função retorna após o login sem representar nenhum CNPJ.
+
     Returns:
         Tupla (p, context, page) em caso de sucesso, ou None em caso de falha.
 
     Exemplos:
-        # Por nome (recomendado — lê senha do senhas.json):
+        # Login simples (sem representar CNPJ):
         resultado = fazer_login(cert_name="DSR")
-        resultado = fazer_login(cert_name="Save Tecnologia")
 
-        # Via .env com CERT_NAME:
-        # .env → CERT_NAME=Save Tecnologia
-        resultado = fazer_login()
+        # Login + representação de CNPJ como Procurador:
+        resultado = fazer_login(cert_name="DSR", cnpj="12345678000190")
 
         # Via planilha:
         resultado = fazer_login(
             cert_pfx_path=linha["Caminho_PFX"],
             cert_pfx_passphrase=linha["Senha_PFX"],
-        )
-
-        # Via formulário:
-        resultado = fazer_login(
-            cert_pfx_path=form["cert_path"],
-            cert_pfx_passphrase=form["cert_pass"],
+            cnpj=linha["CNPJ"],
         )
     """
     if project_dir is None:
@@ -621,4 +859,12 @@ def main(
                 return None
 
     print(f"Login nos Serviços RF concluído. URL final: {page.url}")
+
+    # --- Representar CNPJ como Procurador (se informado) ---
+    if cnpj:
+        print(f"Representando CNPJ {_normalizar_cnpj(cnpj)} como Procurador...")
+        if not _representar_cnpj_procurador(page, cnpj):
+            registrar_erro(f"Login: falha ao representar CNPJ {cnpj}.")
+            print(f"[cnpj] Falha ao representar CNPJ {cnpj}. Retornando página sem representação.")
+
     return p, context, page
