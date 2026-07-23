@@ -28,6 +28,7 @@ import json
 import os
 import random as _random
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -39,6 +40,12 @@ from patchright.sync_api import sync_playwright
 from captcha_uipath import solve_hcaptcha
 
 from .log_manager import registrar_erro
+
+try:
+    from .cert_dialog import selecionar_certificado_no_dialogo as _selecionar_cert_dialog
+    _CERT_DIALOG_OK = True
+except Exception:
+    _CERT_DIALOG_OK = False
 
 # URL de login dos Serviços da Receita Federal (gov.br SSO)
 SERVICOS_RF_URL = "https://servicos.receitafederal.gov.br/"
@@ -76,6 +83,31 @@ CERT_SELECTORS = [
     "text=Seu certificado digital",
     "[data-sso-type='certificate']",
 ]
+
+
+def _build_auto_select_cert_flag(subject_cn: str = "") -> str:
+    """Constrói --auto-select-certificate-for-urls filtrando pelo CN do cert selecionado.
+
+    Em vez de passar o .pfx ao Patchright (cujo proxy TLS do Node falha com
+    ICP-Brasil — SSL alert 40), o Chrome apresenta o certificado JÁ INSTALADO no
+    Windows Certificate Store nativamente (CAPI). Com o CN definido, o Chrome
+    escolhe exatamente o cert correto quando há múltiplos instalados, sem diálogo.
+    Sem CN, usa filtro vazio (primeiro disponível).
+    """
+    subject_cn = (subject_cn or os.getenv("CERT_SUBJECT_CN", "")).strip()
+    filt = {"SUBJECT": {"CN": subject_cn}} if subject_cn else {}
+    patterns = [
+        "https://[*.]acesso.gov.br",
+        "https://[*.]receita.fazenda.gov.br",
+        "https://[*.]fazenda.gov.br",
+        "https://[*.]receitafederal.gov.br",
+    ]
+    entries = json.dumps(
+        [{"pattern": p, "filter": filt} for p in patterns],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return f"--auto-select-certificate-for-urls={entries}"
 
 
 # ---------------------------------------------------------------------------
@@ -307,12 +339,63 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
     return False
 
 
+def _abortar(p, context):
+    """Fecha o navegador e ENCERRA o Playwright antes de desistir do login.
+
+    Sem isso, o loop de eventos do Playwright continua rodando nesta thread e a
+    tentativa seguinte falha com:
+        "It looks like you are using Playwright Sync API inside the asyncio loop."
+    (o patchright checa asyncio.get_running_loop() ao iniciar). Também evita
+    deixar janelas do Chrome órfãs a cada tentativa.
+
+    Sempre retorna None, para uso direto em `return _abortar(p, context)`.
+    """
+    try:
+        if context is not None:
+            context.close()
+    except Exception:
+        pass
+    try:
+        if p is not None:
+            p.stop()
+    except Exception:
+        pass
+    return None
+
+
 def _ja_logado(page) -> bool:
     """Retorna True se o usuário está realmente autenticado (avatar visível no portal)."""
     try:
         return page.locator('#avatar-dropdown-trigger').count() > 0
     except Exception:
         return False
+
+
+def _fechar_popups_iniciais(page) -> None:
+    """Fecha os popups que o portal exibe ao abrir: barra de cookies e tour de boas-vindas.
+
+    1) Cookiebar — clica em "Aceitar".
+    2) Tour de boas-vindas — se aparecer, clica em "Pular Tutorial".
+
+    Tudo é best-effort: a ausência de qualquer popup não é erro.
+    """
+    # 1) Barra de cookies — botão "Aceitar"
+    try:
+        aceitar = page.locator('button.br-button.primary.small[aria-label="Aceitar"]').first
+        aceitar.wait_for(state="visible", timeout=5_000)
+        aceitar.click()
+        print("[popup] Cookies aceitos.")
+    except Exception:
+        pass
+
+    # 2) Tour de boas-vindas ("Primeira vez no Portal de Serviços?") — "Pular Tutorial"
+    try:
+        pular = page.locator('a.skip-tutorial-modal').first
+        pular.wait_for(state="visible", timeout=4_000)
+        pular.click()
+        print("[popup] Tutorial pulado.")
+    except Exception:
+        pass
 
 
 def _acesso_bloqueado(page) -> bool:
@@ -433,24 +516,37 @@ def main(
     cert_pfx_passphrase: str | None = None,
     project_dir: "Path | str | None" = None,
     cnpj: str | None = None,
+    cert_subject_cn: str | None = None,
+    cert_serial: str = "",
+    policy_ok: bool = True,
 ):
     """Realiza o login nos Serviços da Receita Federal e retorna (playwright, context, page).
 
+    Há duas formas de informar o certificado:
+
+    A) Certificado do Windows Certificate Store (recomendado, igual ao eCAC) —
+       passe `cert_subject_cn` (CN do cert escolhido pelo usuário num dropdown que
+       lista os certs instalados na máquina). O Chrome apresenta o cert via CAPI e
+       a flag --auto-select-certificate-for-urls escolhe o correto pelo CN, sem
+       diálogo. Não usa arquivo .pfx nem senha. Requer que a policy de auto-seleção
+       esteja ativa (ver cert_windows.iniciar_guarda no projeto chamador); se não
+       estiver (`policy_ok=False`), um fallback via pywinauto seleciona o cert pelo
+       serial na janela nativa do Chrome.
+
+    B) Arquivo .pfx (legado) — via `cert_name`, `cert_pfx_path`+`cert_pfx_passphrase`
+       ou as variáveis do .env. Passa o certificado ao Patchright como
+       client_certificates. Pode falhar com certs ICP-Brasil (SSL alert 40).
+
     Args:
         cert_name:
-            Nome (ou parte do nome) do certificado em C:\\Certificados.
+            Nome (ou parte do nome) do certificado em C:\\Certificados (modo B).
             A senha é lida automaticamente do senhas.json.
-            Exemplos: "DSR", "Save Tecnologia", "save tec", "Cristiano".
-            Se None, tenta as demais fontes (cert_pfx_path ou .env).
 
         cert_pfx_path:
-            Caminho absoluto para o arquivo .pfx.
-            Use quando o certificado não está em C:\\Certificados ou ao
-            receber o caminho de uma planilha/formulário.
-            Requer cert_pfx_passphrase.
+            Caminho absoluto para o arquivo .pfx (modo B). Requer cert_pfx_passphrase.
 
         cert_pfx_passphrase:
-            Senha do .pfx informado em cert_pfx_path.
+            Senha do .pfx informado em cert_pfx_path (modo B).
 
         project_dir:
             Diretório do projeto chamador. Usado para localizar o .env e
@@ -458,40 +554,56 @@ def main(
 
         cnpj:
             CNPJ da empresa a representar como Procurador após o login.
-            Aceita com ou sem formatação (ex.: "12.345.678/0001-90" ou "12345678000190").
-            Se None, a função retorna após o login sem representar nenhum CNPJ.
+            Aceita com ou sem formatação. Se None, retorna sem representar.
+
+        cert_subject_cn:
+            CN do certificado escolhido no Windows Certificate Store (modo A).
+            Quando informado, tem prioridade sobre o modo B.
+
+        cert_serial:
+            Serial do cert escolhido (modo A) — usado pelo fallback pywinauto para
+            casar a linha certa na janela nativa quando há CNs iguais.
+
+        policy_ok:
+            True se a policy de auto-seleção do registro está ativa (Chrome escolhe
+            sozinho). False ativa o fallback pywinauto na janela de certificado.
 
     Returns:
         Tupla (p, context, page) em caso de sucesso, ou None em caso de falha.
 
     Exemplos:
-        # Login simples (sem representar CNPJ):
-        resultado = fazer_login(cert_name="DSR")
+        # Modo A — cert do Windows Store (CN escolhido no formulário):
+        resultado = fazer_login(cert_subject_cn="EMPRESA LTDA:12345678000190", cnpj="...")
 
-        # Login + representação de CNPJ como Procurador:
+        # Modo B — legado, via .pfx:
         resultado = fazer_login(cert_name="DSR", cnpj="12345678000190")
-
-        # Via planilha:
-        resultado = fazer_login(
-            cert_pfx_path=linha["Caminho_PFX"],
-            cert_pfx_passphrase=linha["Senha_PFX"],
-            cnpj=linha["CNPJ"],
-        )
     """
     if project_dir is None:
         project_dir = Path.cwd()
     project_dir = Path(project_dir)
 
-    # --- Resolver certificado ---
-    resolved_path, resolved_pass = _resolver_certificado(
-        cert_pfx_path, cert_pfx_passphrase, cert_name, project_dir
-    )
+    # --- Modo A: certificado do Windows Certificate Store (via CN) ---
+    usar_windows_store = bool(cert_subject_cn and cert_subject_cn.strip())
+    resolved_path = resolved_pass = None
+
+    if usar_windows_store:
+        os.environ["CERT_SUBJECT_CN"] = cert_subject_cn.strip()
+        print(f"[cert] Usando certificado do Windows Store. CN: {cert_subject_cn.strip()}")
+    else:
+        # --- Modo B (legado): resolver .pfx ---
+        resolved_path, resolved_pass = _resolver_certificado(
+            cert_pfx_path, cert_pfx_passphrase, cert_name, project_dir
+        )
 
     user_data_dir = str(project_dir / "chrome_debug_profile")
     os.makedirs(user_data_dir, exist_ok=True)
     _configurar_download(user_data_dir)
 
     # --- Montar argumentos de lançamento do Chrome ---
+    chrome_args = ["--start-maximized", "--remote-debugging-port=9222"]
+    if usar_windows_store:
+        chrome_args.append(_build_auto_select_cert_flag(cert_subject_cn))
+
     launch_kwargs = dict(
         user_data_dir=user_data_dir,
         channel="chrome",
@@ -499,172 +611,214 @@ def main(
         no_viewport=True,
         ignore_https_errors=True,
         accept_downloads=True,
-        args=["--start-maximized", "--remote-debugging-port=9222"],
+        args=chrome_args,
     )
-    if resolved_path and resolved_pass:
+    if not usar_windows_store and resolved_path and resolved_pass:
         launch_kwargs["client_certificates"] = _build_client_certificates(
             resolved_path, resolved_pass
         )
-    else:
+    elif not usar_windows_store:
         print("[cert] Nenhum certificado configurado. O navegador abrirá sem certificado embutido.")
 
     # --- Iniciar Playwright e Chrome ---
+    # Qualquer falha daqui em diante precisa encerrar o Playwright (ver _abortar):
+    # deixar a instância viva mantém o event loop rodando na thread e quebra a
+    # próxima tentativa com "Sync API inside the asyncio loop".
     p = sync_playwright().start()
-    print("Lançando Chrome...")
-    context = p.chromium.launch_persistent_context(**launch_kwargs)
-    print("Chrome lançado.")
-
-    page = context.pages[0] if context.pages else context.new_page()
-    print("Página obtida.")
-
-    # --- Verificar sessão já ativa ---
-    if _ja_logado(page):
-        print("  -> Sessão ativa detectada. Pulando etapas de autenticação.")
-
-    # --- 1ª navegação para a URL de login ---
-    print(f"[1ª navegação] Abrindo {SERVICOS_RF_URL} ...")
     try:
-        page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
-        print(f"  -> URL: {page.url}")
-    except Exception as e:
-        print(f"  -> erro no goto: {type(e).__name__}: {e}")
-        registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
-        input("ENTER para encerrar...")
-        return None
+        print("Lançando Chrome...")
+        context = p.chromium.launch_persistent_context(**launch_kwargs)
+        print("Chrome lançado.")
 
-    if _ja_logado(page):
-        print("  -> Redirecionado automaticamente. Login concluído.")
-
-    # --- Clicar em "Entrar com gov.br" ---
-    print("Clicando em 'Entrar com gov.br'...")
-    govbr_btn = page.locator('xpath=//*[@id="home-heading"]/div[1]/div/button').first
-    try:
-        govbr_btn.wait_for(state="visible", timeout=15_000)
-        govbr_btn.click()
-        print("  -> clicado.")
-    except Exception as e:
-        registrar_erro(f"Login: botão 'Entrar com gov.br' não encontrado. {type(e).__name__}: {e}")
-        print(f"  -> botão não encontrado: {type(e).__name__}: {e}")
-        try:
-            shot = str(project_dir / "_debug_govbr_btn.png")
-            page.screenshot(path=shot, full_page=True)
-            print(f"     screenshot: {shot}")
-        except Exception:
-            pass
-        input("ENTER para encerrar...")
-        return None
-
-    try:
-        page.wait_for_load_state("domcontentloaded", timeout=20_000)
+        page = context.pages[0] if context.pages else context.new_page()
+        print("Página obtida.")
     except Exception:
-        pass
-    print(f"  -> URL após 'Entrar com gov.br': {page.url}")
+        _abortar(p, None)
+        raise
 
-    if _ja_logado(page):
-        print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
-
-    # --- Resolver captcha após "Entrar com gov.br" (se aparecer) ---
-    if not _try_solve_captcha(page, "captcha-pos-govbr"):
+    try:
+        # --- Verificar sessão já ativa ---
         if _ja_logado(page):
-            print("  -> Captcha falhou mas já está logado. Continuando.")
-        else:
-            registrar_erro("Login: captcha não resolvido após 'Entrar com gov.br'.")
-            print("[captcha] 3 tentativas falharam. Abortando.")
-            return None
+            print("  -> Sessão ativa detectada. Pulando etapas de autenticação.")
 
-    # Verifica bloqueio logo após resolver captcha do govbr
-    if not _ja_logado(page) and _acesso_bloqueado(page):
-        if not _recuperar_acesso_bloqueado(page):
-            registrar_erro("Login: acesso bloqueado após 'Entrar com gov.br' — recuperação falhou.")
-            return None
-
-    if _ja_logado(page):
-        print("  -> Login concluído após captcha gov.br.")
-
-    # --- Clicar em "Seu certificado digital" ---
-    MAX_TENTATIVAS_CERT = 3
-    for tentativa in range(1, MAX_TENTATIVAS_CERT + 1):
-        print(f"[cert] Tentativa {tentativa}/{MAX_TENTATIVAS_CERT}...")
-
-        if _ja_logado(page):
-            print("  -> Já logado no início da tentativa. Saindo do loop.")
-            break
-
-        if not _clicar_certificado(page):
-            registrar_erro("Login: botão 'Seu certificado digital' não encontrado.")
-            if tentativa == MAX_TENTATIVAS_CERT:
-                print("[cert] Botão não encontrado após todas as tentativas. Abortando.")
-                try:
-                    shot = str(project_dir / "_debug_cert_button.png")
-                    page.screenshot(path=shot, full_page=True)
-                    print(f"     screenshot: {shot}")
-                except Exception:
-                    pass
-                return None
-            print("  -> Recarregando e tentando novamente...")
+        # --- 1ª navegação para a URL de login ---
+        print(f"[1ª navegação] Abrindo {SERVICOS_RF_URL} ...")
+        try:
             page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
-            continue
+            print(f"  -> URL: {page.url}")
+        except Exception as e:
+            print(f"  -> erro no goto: {type(e).__name__}: {e}")
+            registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
+            return _abortar(p, context)
 
-        print("  -> Clicado. Aguardando página carregar...")
+        # Fecha popups que aparecem ao abrir o portal (cookies + tour de boas-vindas)
+        _fechar_popups_iniciais(page)
+
+        if _ja_logado(page):
+            print("  -> Redirecionado automaticamente. Login concluído.")
+
+        # --- Clicar em "Entrar com gov.br" ---
+        print("Clicando em 'Entrar com gov.br'...")
+        govbr_btn = page.locator('xpath=//*[@id="home-heading"]/div[1]/div/button').first
+        try:
+            govbr_btn.wait_for(state="visible", timeout=15_000)
+            govbr_btn.click()
+            print("  -> clicado.")
+        except Exception as e:
+            registrar_erro(f"Login: botão 'Entrar com gov.br' não encontrado. {type(e).__name__}: {e}")
+            print(f"  -> botão não encontrado: {type(e).__name__}: {e}")
+            try:
+                shot = str(project_dir / "_debug_govbr_btn.png")
+                page.screenshot(path=shot, full_page=True)
+                print(f"     screenshot: {shot}")
+            except Exception:
+                pass
+            return _abortar(p, context)
+
         try:
             page.wait_for_load_state("domcontentloaded", timeout=20_000)
         except Exception:
             pass
-        print(f"  -> URL após certificado: {page.url}")
+        print(f"  -> URL após 'Entrar com gov.br': {page.url}")
 
         if _ja_logado(page):
-            print("  -> Login realizado sem captcha.")
-            break
+            print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
 
-        # --- Resolver captcha caso apareça após o clique no certificado ---
-        if not _try_solve_captcha(page, f"captcha-pos-cert-t{tentativa}"):
-            print(f"[captcha] tentativa {tentativa}: falhou ao resolver captcha.")
-
-        if _ja_logado(page):
-            print("  -> Login realizado após captcha.")
-            break
-
-        # Verifica bloqueio após captcha do certificado
-        if _acesso_bloqueado(page):
-            print(f"[cert-t{tentativa}] Acesso bloqueado. Tentando recuperar...")
-            if not _recuperar_acesso_bloqueado(page):
-                if tentativa == MAX_TENTATIVAS_CERT:
-                    registrar_erro("Login: acesso bloqueado após certificado — recuperação esgotada.")
-                    return None
-            continue
-
-        # Aguarda redirecionamento final (até 60s)
-        print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
-        for _seg in range(60):
-            _url_atual = page.url
-            print(f"  -> ({_seg + 1}s) URL: {_url_atual}")
+        # --- Resolver captcha após "Entrar com gov.br" (se aparecer) ---
+        if not _try_solve_captcha(page, "captcha-pos-govbr"):
             if _ja_logado(page):
-                print("  -> Redirecionamento confirmado.")
+                print("  -> Captcha falhou mas já está logado. Continuando.")
+            else:
+                registrar_erro("Login: captcha não resolvido após 'Entrar com gov.br'.")
+                print("[captcha] 3 tentativas falharam. Abortando.")
+                return _abortar(p, context)
+
+        # Verifica bloqueio logo após resolver captcha do govbr
+        if not _ja_logado(page) and _acesso_bloqueado(page):
+            if not _recuperar_acesso_bloqueado(page):
+                registrar_erro("Login: acesso bloqueado após 'Entrar com gov.br' — recuperação falhou.")
+                return _abortar(p, context)
+
+        if _ja_logado(page):
+            print("  -> Login concluído após captcha gov.br.")
+
+        # --- Clicar em "Seu certificado digital" ---
+        MAX_TENTATIVAS_CERT = 3
+        for tentativa in range(1, MAX_TENTATIVAS_CERT + 1):
+            print(f"[cert] Tentativa {tentativa}/{MAX_TENTATIVAS_CERT}...")
+
+            if _ja_logado(page):
+                print("  -> Já logado no início da tentativa. Saindo do loop.")
                 break
-            time.sleep(1)
-        else:
-            print(f"  -> Timeout. URL final: {page.url}")
-            if tentativa == MAX_TENTATIVAS_CERT:
-                registrar_erro(
-                    f"Login: redirecionamento não ocorreu. URL atual: {page.url}"
-                )
-                try:
-                    shot = str(project_dir / "_debug_pos_cert.png")
-                    page.screenshot(path=shot, full_page=True)
-                    print(f"     screenshot: {shot}")
-                except Exception:
-                    pass
-                return None
-            continue
-        break
 
-    print(f"Login nos Serviços RF concluído. URL final: {page.url}")
+            if not _clicar_certificado(page):
+                registrar_erro("Login: botão 'Seu certificado digital' não encontrado.")
+                if tentativa == MAX_TENTATIVAS_CERT:
+                    print("[cert] Botão não encontrado após todas as tentativas. Abortando.")
+                    try:
+                        shot = str(project_dir / "_debug_cert_button.png")
+                        page.screenshot(path=shot, full_page=True)
+                        print(f"     screenshot: {shot}")
+                    except Exception:
+                        pass
+                    return _abortar(p, context)
+                print("  -> Recarregando e tentando novamente...")
+                page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
+                continue
 
-    # --- Representar CNPJ como Procurador (se informado) ---
-    if cnpj:
-        print(f"Representando CNPJ {_normalizar_cnpj(cnpj)} como Procurador...")
-        if not _representar_cnpj_procurador(page, cnpj):
-            registrar_erro(f"Login: falha ao representar CNPJ {cnpj}.")
-            print(f"[cnpj] Falha ao representar CNPJ {cnpj}. Retornando página sem representação.")
+            # Fallback: se a policy de auto-seleção não está ativa, o Chrome exibe a
+            # janela nativa "Selecione um certificado". pywinauto seleciona o cert
+            # correto pelo serial/CN e clica OK. Roda em thread porque o clique acima
+            # pode bloquear até a janela ser resolvida.
+            if usar_windows_store and not policy_ok and _CERT_DIALOG_OK:
+                _cn = os.getenv("CERT_SUBJECT_CN", "").strip()
+                threading.Thread(
+                    target=_selecionar_cert_dialog,
+                    args=(_cn, cert_serial),
+                    kwargs={"timeout": 90.0},
+                    daemon=True,
+                ).start()
+            elif usar_windows_store and tentativa == 1:
+                print("[cert] Policy de auto-seleção ativa — Chrome escolhe o certificado sozinho.")
+
+            print("  -> Clicado. Aguardando página carregar...")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=20_000)
+            except Exception:
+                pass
+            print(f"  -> URL após certificado: {page.url}")
+
+            if _ja_logado(page):
+                print("  -> Login realizado sem captcha.")
+                break
+
+            # --- Resolver captcha caso apareça após o clique no certificado ---
+            if not _try_solve_captcha(page, f"captcha-pos-cert-t{tentativa}"):
+                print(f"[captcha] tentativa {tentativa}: falhou ao resolver captcha.")
+
+            if _ja_logado(page):
+                print("  -> Login realizado após captcha.")
+                break
+
+            # Verifica bloqueio após captcha do certificado
+            if _acesso_bloqueado(page):
+                print(f"[cert-t{tentativa}] Acesso bloqueado. Tentando recuperar...")
+                if not _recuperar_acesso_bloqueado(page):
+                    if tentativa == MAX_TENTATIVAS_CERT:
+                        registrar_erro("Login: acesso bloqueado após certificado — recuperação esgotada.")
+                        return _abortar(p, context)
+                continue
+
+            # Aguarda redirecionamento final (até 60s)
+            print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
+            for _seg in range(60):
+                _url_atual = page.url
+                print(f"  -> ({_seg + 1}s) URL: {_url_atual}")
+                if _ja_logado(page):
+                    print("  -> Redirecionamento confirmado.")
+                    break
+                time.sleep(1)
+            else:
+                print(f"  -> Timeout. URL final: {page.url}")
+                if tentativa == MAX_TENTATIVAS_CERT:
+                    registrar_erro(
+                        f"Login: redirecionamento não ocorreu. URL atual: {page.url}"
+                    )
+                    try:
+                        shot = str(project_dir / "_debug_pos_cert.png")
+                        page.screenshot(path=shot, full_page=True)
+                        print(f"     screenshot: {shot}")
+                    except Exception:
+                        pass
+                    return _abortar(p, context)
+                continue
+            break
+
+        print(f"Login nos Serviços RF concluído. URL final: {page.url}")
+
+        # Fecha popups que podem surgir ao cair no portal autenticado (tour de boas-vindas)
+        _fechar_popups_iniciais(page)
+
+        # --- Representar CNPJ como Procurador (se informado) ---
+        if cnpj:
+            # Tour guiado por passos (rodapé com "Pular Tutorial", classe skip-tutorial)
+            # pode estar ativo sobre a etapa de Representação — pula se existir.
+            try:
+                skip_tour = page.locator('a.skip-tutorial').first
+                if skip_tour.is_visible(timeout=3_000):
+                    skip_tour.click()
+                    print("[popup] Tour guiado pulado (skip-tutorial).")
+            except Exception:
+                pass
+
+            print(f"Representando CNPJ {_normalizar_cnpj(cnpj)} como Procurador...")
+            if not _representar_cnpj_procurador(page, cnpj):
+                registrar_erro(f"Login: falha ao representar CNPJ {cnpj}.")
+                print(f"[cnpj] Falha ao representar CNPJ {cnpj}. Retornando página sem representação.")
+    except Exception:
+        # Falha inesperada: encerra o Playwright para não vazar o event loop
+        # (a próxima tentativa falharia com 'Sync API inside the asyncio loop').
+        _abortar(p, context)
+        raise
 
     return p, context, page

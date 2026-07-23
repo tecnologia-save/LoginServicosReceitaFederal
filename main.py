@@ -6,7 +6,7 @@ Edite CERT_NAME e CNPJ abaixo (ou configure o .env) e execute:
 from servicos_rf_login import fazer_login
 
 # ── Login simples (sem representar CNPJ) ──────────────────────────────────
-resultado = fazer_login(cert_name="DSR")
+resultado = fazer_login(cert_name="D&S", cnpj="50836911000121")
 
 # ── Login + representação de CNPJ como Procurador ─────────────────────────
 # resultado = fazer_login(cert_name="DSR", cnpj="12345678000190")
