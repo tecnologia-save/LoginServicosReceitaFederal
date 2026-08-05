@@ -31,7 +31,7 @@ Retorna uma instância de navegador já autenticada, pronta para uso em outras a
 - Certificado digital A1 (`.pfx`) em `C:\Certificados`
 - Arquivo `C:\Certificados\senhas.json` com as senhas (ver formato abaixo)
 - Chave de API do Google Gemini (`GEMINI_API_KEY`)
-- Pacote [`captcha_uipath`](https://github.com/tecnologia-save/CaptchaSolver) instalado
+- Pacote [`resolvedor_captcha`](https://github.com/tecnologia-save/ResolvedorCaptcha-Python) instalado
 
 ---
 
@@ -57,7 +57,7 @@ python -m venv .venv
 pip install -e .
 ```
 
-> O pacote `captcha_uipath` deve estar instalado no mesmo ambiente. Consulte o repositório [CaptchaSolver](https://github.com/tecnologia-save/CaptchaSolver) para instruções de instalação.
+> O pacote `resolvedor_captcha` deve estar instalado no mesmo ambiente. Consulte o repositório [ResolvedorCaptcha](https://github.com/tecnologia-save/ResolvedorCaptcha-Python) para instruções de instalação.
 
 ### 4. Instale os binários do Patchright
 
@@ -222,7 +222,7 @@ resultado = fazer_login(
 
 ## Resolução de hCaptcha
 
-O hCaptcha é resolvido automaticamente pelo pacote `captcha_uipath` usando o **Google Gemini 2.5 Flash**. Quatro tipos de desafio são suportados:
+O hCaptcha é resolvido automaticamente pelo pacote `resolvedor_captcha` usando o **Google Gemini 2.5 Flash**. Quatro tipos de desafio são suportados:
 
 ### Tipos de captcha
 
@@ -292,7 +292,7 @@ LoginServicosReceitaFederal/
 |---|---|
 | `patchright` | Automação do navegador com suporte a certificados digitais A1 |
 | `python-dotenv` | Carregamento das variáveis do `.env` |
-| `captcha_uipath` | Resolução de hCaptcha via Google Gemini |
+| `resolvedor_captcha` | Resolução de hCaptcha via Google Gemini |
 
 > `difflib`, `threading`, `random` e `json` são da biblioteca padrão do Python.
 
