@@ -118,12 +118,12 @@ def _carregar_senhas() -> dict[str, str]:
     """Carrega o mapeamento filename → senha do senhas.json em C:\\Certificados."""
     senhas_file = CERT_DIR / "senhas.json"
     if not senhas_file.exists():
-        print(f"[cert] senhas.json não encontrado em {CERT_DIR}")
+        print("[cert] senhas.json não encontrado no diretório de certificados.")
         return {}
     try:
         return json.loads(senhas_file.read_text(encoding="utf-8"))
     except Exception as e:
-        print(f"[cert] Erro ao ler senhas.json: {e}")
+        print(f"[cert] Erro ao ler senhas.json: {type(e).__name__}")
         return {}
 
 
@@ -155,7 +155,7 @@ def _buscar_cert_por_nome(nome: str) -> tuple[str, str] | tuple[None, None]:
     """
     certs = _listar_certs_disponiveis()
     if not certs:
-        print(f"[cert] Nenhum certificado (.pfx/.p12) encontrado em {CERT_DIR}")
+        print("[cert] Nenhum certificado (.pfx/.p12) encontrado no diretório de certificados.")
         return None, None
 
     senhas = _carregar_senhas()
@@ -180,11 +180,8 @@ def _buscar_cert_por_nome(nome: str) -> tuple[str, str] | tuple[None, None]:
     if len(substring_matches) > 1:
         # Múltiplos matches de substring: escolhe o cujo stem é mais próximo (menor diferença de tamanho)
         substring_matches.sort(key=lambda fn: abs(len(Path(fn).stem) - len(nome)))
-        print(
-            f"[cert] Múltiplos matches para '{nome}': "
-            + ", ".join(substring_matches)
-            + f". Usando '{substring_matches[0]}'."
-        )
+        print(f"[cert] Múltiplos matches ({len(substring_matches)}) para o nome "
+              "informado; usando o mais próximo.")
         return _retornar_cert(substring_matches[0], senhas)
 
     # ---- 3) Match fuzzy (difflib) ----
@@ -192,13 +189,11 @@ def _buscar_cert_por_nome(nome: str) -> tuple[str, str] | tuple[None, None]:
     close = difflib.get_close_matches(nome_lower, stems, n=1, cutoff=0.4)
     if close:
         idx = stems.index(close[0])
-        print(f"[cert] Match fuzzy para '{nome}': '{certs[idx]}'.")
+        print("[cert] Certificado resolvido por correspondência aproximada.")
         return _retornar_cert(certs[idx], senhas)
 
-    print(
-        f"[cert] Nenhum certificado encontrado para '{nome}'. "
-        f"Disponíveis: {', '.join(certs)}"
-    )
+    print(f"[cert] Nenhum certificado encontrado para o nome informado "
+          f"({len(certs)} disponível(is)).")
     return None, None
 
 
@@ -207,9 +202,9 @@ def _retornar_cert(filename: str, senhas: dict) -> tuple[str, str] | tuple[None,
     caminho = str(CERT_DIR / filename)
     senha = senhas.get(filename)
     if not senha:
-        print(f"[cert] Senha não encontrada em senhas.json para '{filename}'.")
+        print("[cert] Senha não encontrada em senhas.json para o certificado indicado.")
         return None, None
-    print(f"[cert] Certificado selecionado: {filename}")
+    print("[cert] Certificado selecionado.")
     return caminho, senha
 
 
@@ -230,9 +225,9 @@ def _resolver_certificado(
     # 1) Parâmetros explícitos de caminho
     if cert_pfx_path and cert_pfx_passphrase:
         if not os.path.isfile(cert_pfx_path):
-            print(f"[cert] Arquivo não encontrado: {cert_pfx_path}")
+            print("[cert] Arquivo de certificado não encontrado.")
             return None, None
-        print(f"[cert] Usando certificado passado por parâmetro: {cert_pfx_path}")
+        print("[cert] Usando certificado PFX informado por parâmetro.")
         return cert_pfx_path, cert_pfx_passphrase
 
     # 2) Nome fornecido como parâmetro → busca em C:\Certificados
@@ -256,9 +251,9 @@ def _resolver_certificado(
     pass_env = os.environ.get("CERT_PFX_PASSPHRASE")
     if path_env and pass_env:
         if not os.path.isfile(path_env):
-            print(f"[cert] Arquivo não encontrado: {path_env}")
+            print("[cert] Arquivo de certificado não encontrado.")
             return None, None
-        print(f"[cert] Usando certificado do .env (CERT_PFX_PATH): {path_env}")
+        print("[cert] Usando certificado PFX indicado pelo ambiente.")
         return path_env, pass_env
 
     print(
@@ -294,7 +289,7 @@ def _configurar_download(user_data_dir: str) -> None:
     prefs["plugins"]["always_open_pdf_externally"] = True
 
     prefs_file.write_text(json.dumps(prefs), encoding="utf-8")
-    print(f"[download] Diretório configurado: {downloads_dir}")
+    print("[download] Diretório de download configurado.")
 
 
 def _build_client_certificates(cert_path: str, cert_pass: str) -> list[dict]:
@@ -450,7 +445,7 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
     Até 3 tentativas em caso de falha.
     """
     cnpj = _normalizar_cnpj(cnpj)
-    print(f"[cnpj] Iniciando representação do CNPJ {cnpj} como Procurador...")
+    print("[cnpj] Iniciando representação do perfil PJ como Procurador...")
 
     for tentativa in range(1, 4):
         if tentativa > 1:
@@ -469,7 +464,7 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
             avatar.click()
 
             # 2. Preenche CNPJ
-            print(f"[cnpj] Preenchendo CNPJ {cnpj}...")
+            print("[cnpj] Preenchendo identificador do perfil PJ...")
             campo = page.locator('#input-representar-cpfcnpj').first
             campo.wait_for(state="visible", timeout=10_000)
             campo.fill(cnpj)
@@ -573,10 +568,10 @@ def main(
 
     Exemplos:
         # Modo A — cert do Windows Store (CN escolhido no formulário):
-        resultado = fazer_login(cert_subject_cn="EMPRESA LTDA:12345678000190", cnpj="...")
+        resultado = fazer_login(cert_subject_cn="<EMPRESA>:<CNPJ>", cnpj="<CNPJ>")
 
         # Modo B — legado, via .pfx:
-        resultado = fazer_login(cert_name="DSR", cnpj="12345678000190")
+        resultado = fazer_login(cert_name="<nome do certificado>", cnpj="<CNPJ>")
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -588,7 +583,7 @@ def main(
 
     if usar_windows_store:
         os.environ["CERT_SUBJECT_CN"] = cert_subject_cn.strip()
-        print(f"[cert] Usando certificado do Windows Store. CN: {cert_subject_cn.strip()}")
+        print("[cert] Usando certificado do Windows Store.")
     else:
         # --- Modo B (legado): resolver .pfx ---
         resolved_path, resolved_pass = _resolver_certificado(
@@ -642,13 +637,13 @@ def main(
             print("  -> Sessão ativa detectada. Pulando etapas de autenticação.")
 
         # --- 1ª navegação para a URL de login ---
-        print(f"[1ª navegação] Abrindo {SERVICOS_RF_URL} ...")
+        print("[1ª navegação] Abrindo o portal Serviços RF ...")
         try:
             page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
-            print(f"  -> URL: {page.url}")
+            print("  -> página inicial carregada.")
         except Exception as e:
-            print(f"  -> erro no goto: {type(e).__name__}: {e}")
-            registrar_erro(f"Login: erro ao abrir URL (1ª navegação). {type(e).__name__}: {e}")
+            print(f"  -> erro no goto: {type(e).__name__}")
+            registrar_erro(f"Login: erro ao abrir a página de login. {type(e).__name__}")
             return _abortar(p, context)
 
         # Fecha popups que aparecem ao abrir o portal (cookies + tour de boas-vindas)
@@ -670,7 +665,7 @@ def main(
             try:
                 shot = str(project_dir / "_debug_govbr_btn.png")
                 page.screenshot(path=shot, full_page=True)
-                print(f"     screenshot: {shot}")
+                print("     screenshot de debug gravado.")
             except Exception:
                 pass
             return _abortar(p, context)
@@ -679,7 +674,7 @@ def main(
             page.wait_for_load_state("domcontentloaded", timeout=20_000)
         except Exception:
             pass
-        print(f"  -> URL após 'Entrar com gov.br': {page.url}")
+        print("  -> navegação após 'Entrar com gov.br' concluída.")
 
         if _ja_logado(page):
             print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
@@ -718,7 +713,7 @@ def main(
                     try:
                         shot = str(project_dir / "_debug_cert_button.png")
                         page.screenshot(path=shot, full_page=True)
-                        print(f"     screenshot: {shot}")
+                        print("     screenshot de debug gravado.")
                     except Exception:
                         pass
                     return _abortar(p, context)
@@ -746,7 +741,7 @@ def main(
                 page.wait_for_load_state("domcontentloaded", timeout=20_000)
             except Exception:
                 pass
-            print(f"  -> URL após certificado: {page.url}")
+            print("  -> certificado apresentado; navegação seguiu.")
 
             if _ja_logado(page):
                 print("  -> Login realizado sem captcha.")
@@ -779,22 +774,20 @@ def main(
                     break
                 time.sleep(1)
             else:
-                print(f"  -> Timeout. URL final: {page.url}")
+                print("  -> Timeout aguardando o portal autenticado.")
                 if tentativa == MAX_TENTATIVAS_CERT:
-                    registrar_erro(
-                        f"Login: redirecionamento não ocorreu. URL atual: {page.url}"
-                    )
+                    registrar_erro("Login: redirecionamento após o certificado não ocorreu.")
                     try:
                         shot = str(project_dir / "_debug_pos_cert.png")
                         page.screenshot(path=shot, full_page=True)
-                        print(f"     screenshot: {shot}")
+                        print("     screenshot de debug gravado.")
                     except Exception:
                         pass
                     return _abortar(p, context)
                 continue
             break
 
-        print(f"Login nos Serviços RF concluído. URL final: {page.url}")
+        print("Login nos Serviços RF concluído.")
 
         # Fecha popups que podem surgir ao cair no portal autenticado (tour de boas-vindas)
         _fechar_popups_iniciais(page)
@@ -811,10 +804,10 @@ def main(
             except Exception:
                 pass
 
-            print(f"Representando CNPJ {_normalizar_cnpj(cnpj)} como Procurador...")
+            print("Representando o perfil PJ como Procurador...")
             if not _representar_cnpj_procurador(page, cnpj):
-                registrar_erro(f"Login: falha ao representar CNPJ {cnpj}.")
-                print(f"[cnpj] Falha ao representar CNPJ {cnpj}. Retornando página sem representação.")
+                registrar_erro("Login: falha ao representar o perfil PJ.")
+                print("[cnpj] Falha ao representar o perfil PJ. Retornando página sem representação.")
     except Exception:
         # Falha inesperada: encerra o Playwright para não vazar o event loop
         # (a próxima tentativa falharia com 'Sync API inside the asyncio loop').
