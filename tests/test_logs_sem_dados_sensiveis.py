@@ -272,9 +272,10 @@ def test_o_gate_de_excecao_crua_detecta():
     achados = []
     for h in [n for n in ast.walk(arvore) if isinstance(n, ast.ExceptHandler)]:
         for no in ast.walk(h):
-            if isinstance(no, ast.Call) and getattr(no.func, "id", None) == "print":
-                if f"{{{h.name}}}" in ast.unparse(no):
-                    achados.append(no.lineno)
+            if (isinstance(no, ast.Call)
+                    and getattr(no.func, "id", None) == "print"
+                    and f"{{{h.name}}}" in ast.unparse(no)):
+                achados.append(no.lineno)
     assert len(achados) == 2
 
 

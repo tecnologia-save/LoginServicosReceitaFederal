@@ -14,7 +14,14 @@ Documentos aqui sao SINTETICOS; o HTML real nao entra no repositorio.
 import re
 
 import pytest
-from fakes_portal import CNPJ_ALVO, CNPJ_ALVO_FORMATADO, CNPJ_OUTRO, Pagina, Perfil, Portal
+from fakes_portal import (
+    CNPJ_ALVO,
+    CNPJ_ALVO_FORMATADO,
+    CNPJ_OUTRO,
+    Pagina,
+    Perfil,
+    Portal,
+)
 
 from servicos_rf_login import login
 
