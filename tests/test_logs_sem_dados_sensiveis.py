@@ -231,3 +231,54 @@ def test_host_da_url_nunca_levanta_nem_devolve_a_entrada(entrada):
 def test_host_da_url_preserva_o_host_do_portal():
     assert host_da_url("https://servicos.receitafederal.gov.br/a/b?x=1") == (
         "servicos.receitafederal.gov.br")
+
+
+# ── Excecao crua em log ──────────────────────────────────────────────────────
+#
+# Gate equivalente ao do ResolvedorCaptcha. Mensagem de excecao do Playwright
+# embute seletor, URL de frame e trechos do DOM; a do gov.br pode trazer a URL
+# do fluxo OAuth. So o NOME DA CLASSE pode sair.
+
+def test_nenhum_log_interpola_a_excecao_capturada():
+    """Varre o fonte inteiro, nao so os pontos ja conhecidos."""
+    arvore = _arvore()
+    ofensores = []
+    for h in [n for n in ast.walk(arvore) if isinstance(n, ast.ExceptHandler)]:
+        if not h.name:
+            continue
+        for no in ast.walk(h):
+            if not (isinstance(no, ast.Call)
+                    and (getattr(no.func, "id", None) in FUNCOES_DE_SAIDA
+                         or getattr(no.func, "attr", None) in FUNCOES_DE_SAIDA)):
+                continue
+            texto = ast.unparse(no)
+            for forma in (f"{{{h.name}}}", f"str({h.name})", f"repr({h.name})",
+                          f"{h.name}.args"):
+                if forma in texto:
+                    ofensores.append(f"linha {no.lineno}: {forma}")
+    assert ofensores == [], "excecao crua em log:\n  " + "\n  ".join(ofensores)
+
+
+def test_o_gate_de_excecao_crua_detecta():
+    """Poder discriminante — reproduz as formas que existiam no arquivo."""
+    arvore = ast.parse(
+        "def f():\n"
+        "    try:\n"
+        "        g()\n"
+        "    except Exception as e:\n"
+        '        print(f"a: {e}")\n'
+        '        print(f"b: {type(e).__name__}: {e}")\n'
+    )
+    achados = []
+    for h in [n for n in ast.walk(arvore) if isinstance(n, ast.ExceptHandler)]:
+        for no in ast.walk(h):
+            if isinstance(no, ast.Call) and getattr(no.func, "id", None) == "print":
+                if f"{{{h.name}}}" in ast.unparse(no):
+                    achados.append(no.lineno)
+    assert len(achados) == 2
+
+
+def test_tipo_da_excecao_continua_permitido():
+    """`type(e).__name__` e' diagnostico e nao carrega valor."""
+    fonte = FONTE.read_text(encoding="utf-8")
+    assert "type(e).__name__" in fonte

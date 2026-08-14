@@ -348,7 +348,8 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
                 return True
             print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False.")
         except Exception as e:
-            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: {type(e).__name__}: {e}")
+            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: "
+                  f"{type(e).__name__}")
     return False
 
 
@@ -428,7 +429,8 @@ def _recuperar_acesso_bloqueado(page) -> bool:
     try:
         page.go_back(wait_until="domcontentloaded", timeout=15_000)
     except Exception as e:
-        print(f"[bloqueado] go_back falhou ({e}). Recarregando URL de login...")
+        print(f"[bloqueado] go_back falhou ({type(e).__name__}). "
+              "Recarregando URL de login...")
         try:
             page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
         except Exception:
@@ -441,7 +443,8 @@ def _recuperar_acesso_bloqueado(page) -> bool:
         govbr_btn.click()
         page.wait_for_load_state("domcontentloaded", timeout=20_000)
     except Exception as e:
-        print(f"[bloqueado] Botão 'Entrar com gov.br' não encontrado após go_back: {e}")
+        print("[bloqueado] Botão 'Entrar com gov.br' não encontrado após "
+              f"go_back: {type(e).__name__}")
         return False
 
     return _try_solve_captcha(page, "captcha-pos-bloqueado")
@@ -827,8 +830,9 @@ def main(
             govbr_btn.click()
             print("  -> clicado.")
         except Exception as e:
-            registrar_erro(f"Login: botão 'Entrar com gov.br' não encontrado. {type(e).__name__}: {e}")
-            print(f"  -> botão não encontrado: {type(e).__name__}: {e}")
+            registrar_erro("Login: botão 'Entrar com gov.br' não encontrado. "
+                           f"{type(e).__name__}")
+            print(f"  -> botão não encontrado: {type(e).__name__}")
             try:
                 shot = str(project_dir / "_debug_govbr_btn.png")
                 page.screenshot(path=shot, full_page=True)
