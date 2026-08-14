@@ -293,3 +293,20 @@ def test_mensagens_das_excecoes_sao_constantes():
     with pytest.raises(login.RepresentacaoNaoConfirmada) as exc:
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO)
     assert not re.search(r"\d{11,14}", str(exc.value))
+
+
+# ══ Contrato publico ════════════════════════════════════════════════════════
+
+def test_vocabulario_e_excecoes_estao_na_api_publica():
+    """Quem injeta o callback precisa das respostas e dos desfechos sem
+    alcancar o submodulo `login`."""
+    import servicos_rf_login as pacote
+    for nome in ("CONTINUAR", "CANCELAR", "EXPIRADO", "fazer_login",
+                 "RepresentacaoNaoConfirmada", "RepresentacaoRequerIntervencao",
+                 "RepresentacaoCancelada", "RepresentacaoExpirada"):
+        assert nome in pacote.__all__
+        assert getattr(pacote, nome) is getattr(login, nome, None) or nome == "fazer_login"
+
+
+def test_respostas_sao_distintas():
+    assert len({login.CONTINUAR, login.CANCELAR, login.EXPIRADO}) == 3
