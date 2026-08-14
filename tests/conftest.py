@@ -28,6 +28,22 @@ def relogio_virtual(monkeypatch):
     return agora
 
 
+@pytest.fixture(autouse=True)
+def detector(monkeypatch):
+    """Classificacao do desafio a partir do estado do portal falso.
+
+    Autouse: a politica de allowlist consulta o tipo ANTES de qualquer coisa,
+    entao nenhum teste do fluxo roda sem isto.
+    """
+    def falso(pagina, *_a, **_k):
+        portal = getattr(pagina, "portal", None)
+        if portal is None or not portal.captcha:
+            return login.TIPO_NENHUM
+        return portal.captcha_tipo
+
+    monkeypatch.setattr(login, "detectar_tipo_captcha", falso)
+
+
 @pytest.fixture
 def solver(monkeypatch):
     """Duble do resolvedor automatico de captcha.

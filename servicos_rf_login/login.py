@@ -38,7 +38,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from patchright.sync_api import sync_playwright
-from resolvedor_captcha import captcha_presente, solve_hcaptcha
+from resolvedor_captcha import (
+    TIPO_GRADE,
+    TIPO_GRADE_FUSED,
+    TIPO_NENHUM,
+    detectar_tipo_captcha,
+    solve_hcaptcha,
+)
 
 from .log_manager import registrar_erro
 
@@ -482,6 +488,22 @@ SEL_PAPEL_REPRESENTACAO = "#avatar-dropdown-trigger .papel-representacao"
 
 PAPEL_ESPERADO = "procurador"
 
+# ALLOWLIST — política DESTE fluxo, não do resolvedor.
+#
+# Numa execução real o portal apresentou um `cartao_animal` ao representar. O
+# solver tentou: 3 rodadas, 12 capturas de frame, chamadas ao modelo — e
+# terminou em intervenção humana do mesmo jeito. Formato que exige animação e
+# leitura de cartas não é o que se quer tentar no meio de um login com prazo.
+#
+# Allowlist, não denylist: um formato NOVO do portal cai automaticamente no
+# caminho humano, em vez de ser tentado só porque ninguém o proibiu ainda. O
+# mesmo vale para `desconhecido`, que é o que a classificação devolve quando
+# não consegue decidir.
+#
+# Isto NÃO remove suporte a nada no ResolvedorCaptcha: `cartao_animal` e
+# `imagem` seguem resolvíveis por outros consumidores e pelo captcha do login.
+TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE, TIPO_GRADE_FUSED)
+
 # Janela curta para o SPA refletir a troca antes de concluirmos que ela não
 # ocorreu. Curta de propósito: quando há captcha, esperar mais não muda nada.
 ESPERA_POS_CONDICAO_S = 8.0
@@ -562,12 +584,17 @@ def _aguardar_perfil_representado(page, cnpj_alvo: str,
         time.sleep(INTERVALO_POS_CONDICAO_S)
 
 
-def _ha_captcha(page) -> bool:
-    """Só DETECÇÃO. Este desafio não é resolvido automaticamente."""
+def _tipo_do_desafio(page) -> str:
+    """Tipo do desafio atual — só INSPEÇÃO, nunca resolução.
+
+    `TIPO_NENHUM` na indeterminação: dizer "não há desafio" leva a
+    `RepresentacaoNaoConfirmada`, que é o desfecho seguro. Chutar um tipo
+    poderia mandar um formato desconhecido para o caminho automático.
+    """
     try:
-        return bool(captcha_presente(page))
-    except Exception:  # noqa: BLE001 — indeterminado é "não detectei"
-        return False
+        return detectar_tipo_captcha(page)
+    except Exception:  # noqa: BLE001 — indeterminado não pode virar automático
+        return TIPO_NENHUM
 
 
 def _preencher_formulario_representacao(page, cnpj: str) -> None:
@@ -648,43 +675,43 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
 
     # Não confirmou. Captcha é UMA explicação possível — não a única. Sem essa
     # separação, qualquer mudança de DOM ou portal fora do ar viraria "captcha".
-    if not _ha_captcha(page):
+    tipo = _tipo_do_desafio(page)
+    if tipo == TIPO_NENHUM:
         raise RepresentacaoNaoConfirmada(
             "o portal nao confirmou a representacao do perfil.")
 
-    # ── Tentativa AUTOMÁTICA antes de qualquer janela ────────────────────────
-    #
-    # Nem todo desafio aqui é dos que a automação não sabe resolver: o portal
-    # também apresenta formatos que o resolvedor já trata. Chamar o humano
-    # antes de tentar seria pedir trabalho manual para algo automatizável — e,
-    # em background, transformaria em falha uma run que teria terminado sozinha.
+    # ── Tentativa AUTOMÁTICA — SÓ para os tipos da allowlist ─────────────────
     #
     # O veredito do solver é registrado mas NÃO decide nada: quem decide é a
     # pós-condição do perfil. `True` do solver também significa "não havia
     # captcha", e resolver o desafio não é o mesmo que o portal ter trocado o
     # perfil.
-    print("[cnpj] Desafio detectado; tentando resolução automática...")
-    try:
-        automatico = solve_hcaptcha(page)
-    # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
-    # formas — chave ausente, dependência indisponível, página morta — e todas
-    # significam a mesma coisa aqui: erro técnico, não trabalho para humano.
-    except Exception as e:  # noqa: BLE001
-        raise FalhaDoResolvedorCaptcha(
-            f"o resolvedor de captcha falhou tecnicamente ({type(e).__name__})."
-        ) from None
-    print(f"[cnpj] Resolução automática: {'concluída' if automatico else 'não concluída'}.")
+    if tipo in TIPOS_AUTOMATICOS_REPRESENTACAO:
+        print(f"[cnpj] Desafio automatizável detectado | tipo={tipo}")
+        try:
+            automatico = solve_hcaptcha(page)
+        # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
+        # formas — chave ausente, dependência indisponível, página morta — e
+        # todas significam o mesmo aqui: erro técnico, não trabalho para humano.
+        except Exception as e:  # noqa: BLE001
+            raise FalhaDoResolvedorCaptcha(
+                f"o resolvedor de captcha falhou tecnicamente ({type(e).__name__})."
+            ) from None
+        print(f"[cnpj] Resolução automática: "
+              f"{'concluída' if automatico else 'não concluída'}.")
 
-    print("[cnpj] Aguardando confirmação da representação...")
-    if _aguardar_perfil_representado(page, cnpj):
-        print("[cnpj] Perfil representado confirmado.")
-        return True
+        print("[cnpj] Aguardando confirmação da representação...")
+        if _aguardar_perfil_representado(page, cnpj):
+            print("[cnpj] Perfil representado confirmado.")
+            return True
 
-    # O desafio pode ter sumido sem que o perfil trocasse — aí não há o que um
-    # humano resolva, e chamar a janela só adiaria o diagnóstico.
-    if not _ha_captcha(page):
-        raise RepresentacaoNaoConfirmada(
-            "o portal nao confirmou a representacao do perfil.")
+        # O desafio pode ter sumido sem que o perfil trocasse — aí não há o que
+        # um humano resolva, e chamar a janela só adiaria o diagnóstico.
+        if _tipo_do_desafio(page) == TIPO_NENHUM:
+            raise RepresentacaoNaoConfirmada(
+                "o portal nao confirmou a representacao do perfil.")
+    else:
+        print(f"[cnpj] Desafio requer validação manual | tipo={tipo}")
 
     print("[cnpj] Validação manual necessária.")
     if on_manual_challenge is None:

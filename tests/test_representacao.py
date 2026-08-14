@@ -222,7 +222,8 @@ def test_o_humano_so_e_chamado_depois_da_tentativa_automatica(solver):
     teria terminado sozinha.
     """
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=login.TIPO_GRADE, automatizavel=False)
     with pytest.raises(login.RepresentacaoRequerIntervencao):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO)
     assert solver["chamadas"] == 1

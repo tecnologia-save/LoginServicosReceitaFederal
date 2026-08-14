@@ -11,7 +11,7 @@ duble reproduz apenas a ESTRUTURA relevante, com documentos sinteticos:
 E essa a diferenca que a pos-condicao verifica. Avatar visivel existe nos tres
 estados — e por isso nunca serviu de prova.
 """
-from resolvedor_captcha import solver
+from resolvedor_captcha import TIPO_CARTAO_ANIMAL, solver
 
 from servicos_rf_login import login
 
@@ -40,21 +40,27 @@ class Portal:
         self.documento_digitado = None
         self.ao_representar = None      # o que o portal faz apos o clique
         self.captcha_automatizavel = False
+        self.captcha_tipo = login.TIPO_NENHUM
 
     # ── acoes do teste ───────────────────────────────────────────────────────
     def representar(self, documento, papel="Procurador"):
         self.perfil = Perfil(documento, papel)
         self.captcha = False
+        self.captcha_tipo = login.TIPO_NENHUM
 
-    def exigir_captcha(self, automatizavel=False):
-        """O portal exibiu um desafio.
+    def exigir_captcha(self, tipo=TIPO_CARTAO_ANIMAL, automatizavel=None):
+        """O portal exibiu um desafio de `tipo`.
 
-        `automatizavel=True` modela o formato que o resolvedor JA trata: o
-        duble do solver resolve e o portal representa. E a diferenca entre o
-        cenario 2 e o 3.
+        O TIPO decide a politica: so `grade` e `grade_fused` podem ser tentados
+        automaticamente na representacao. `automatizavel` diz se o duble do
+        solver consegue resolve-lo — por padrao, sim para os tipos da
+        allowlist.
         """
         self.captcha = True
-        self.captcha_automatizavel = automatizavel
+        self.captcha_tipo = tipo
+        self.captcha_automatizavel = (
+            tipo in login.TIPOS_AUTOMATICOS_REPRESENTACAO
+            if automatizavel is None else automatizavel)
 
 
 class _Locator:

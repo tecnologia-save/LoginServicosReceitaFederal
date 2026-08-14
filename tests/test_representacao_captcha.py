@@ -26,6 +26,13 @@ Sem captcha real, sem Gemini, sem portal.
 """
 import pytest
 from fakes_portal import CNPJ_ALVO, CNPJ_OUTRO, Pagina, Portal
+from resolvedor_captcha import (
+    TIPO_CARTAO_ANIMAL,
+    TIPO_DESCONHECIDO,
+    TIPO_GRADE,
+    TIPO_GRADE_FUSED,
+    TIPO_IMAGEM,
+)
 
 from servicos_rf_login import login
 
@@ -69,7 +76,7 @@ def test_a_sem_captcha_nao_chama_solver_nem_humano(solver):
 
 def test_b_captcha_automatizavel_resolve_sem_humano(solver, capsys):
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha(automatizavel=True)
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE)
     cb = _chamador([login.CONTINUAR])
 
     assert login._representar_cnpj_procurador(
@@ -81,9 +88,10 @@ def test_b_captcha_automatizavel_resolve_sem_humano(solver, capsys):
 
 # ══ Cenario C · captcha que precisa de humano ═══════════════════════════════
 
-def test_c_captcha_nao_automatizavel_cai_para_o_humano(solver):
+def test_c_grade_que_o_solver_nao_conclui_cai_para_o_humano(solver):
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha(automatizavel=False)
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     def humano(*, segundos_restantes):
         portal.representar(CNPJ_ALVO)
@@ -103,7 +111,8 @@ def test_a_ordem_e_automatico_e_so_depois_humano(solver):
 
     solver["efeito"] = so_registra
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     def humano(*, segundos_restantes):
         ordem.append("humano")
@@ -121,7 +130,8 @@ def test_d_solver_diz_resolvido_mas_perfil_nao_mudou(solver):
     """O veredito do solver nao decide: quem decide e a pos-condicao."""
     solver["efeito"] = lambda _portal: True      # afirma que resolveu, e mente
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     def humano(*, segundos_restantes):
         portal.representar(CNPJ_ALVO)
@@ -136,7 +146,8 @@ def test_e_erro_tecnico_do_solver_nao_vira_intervencao_manual(solver):
     solver["efeito"] = RuntimeError("GEMINI_API_KEY nao configurada no ambiente.")
     cb = _chamador([login.CONTINUAR])
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     with pytest.raises(login.FalhaDoResolvedorCaptcha):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
@@ -147,7 +158,8 @@ def test_e_erro_tecnico_do_solver_nao_vira_intervencao_manual(solver):
 def test_e_erro_tecnico_nao_carrega_a_mensagem_original(solver):
     solver["efeito"] = RuntimeError("SEGREDO_TESTE_chave_no_ambiente")
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     with pytest.raises(login.FalhaDoResolvedorCaptcha) as exc:
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO)
@@ -164,7 +176,8 @@ def test_f_captcha_some_mas_perfil_errado_nao_e_sucesso(solver):
     solver["efeito"] = resolve_errado
     cb = _chamador([login.CONTINUAR])
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     with pytest.raises(login.RepresentacaoNaoConfirmada):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
@@ -174,7 +187,8 @@ def test_f_captcha_some_mas_perfil_errado_nao_e_sucesso(solver):
 
 def test_g_continuar_cedo_demais_depois_do_automatico(solver):
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha()
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
     n = {"v": 0}
 
     def humano(*, segundos_restantes):
@@ -191,7 +205,7 @@ def test_g_continuar_cedo_demais_depois_do_automatico(solver):
 def test_h_background_com_captcha_automatizavel_resolve_sozinho(solver):
     """Background NAO significa que todo captcha falha."""
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha(automatizavel=True)
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE)
 
     assert login._representar_cnpj_procurador(
         pagina, CNPJ_ALVO, on_manual_challenge=None) is True
@@ -200,7 +214,8 @@ def test_h_background_com_captcha_automatizavel_resolve_sozinho(solver):
 
 def test_i_background_com_captcha_manual_pede_intervencao(solver):
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha(automatizavel=False)
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE, automatizavel=False)
 
     with pytest.raises(login.RepresentacaoRequerIntervencao):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
@@ -221,3 +236,104 @@ def test_o_captcha_do_login_nao_foi_alterado():
     fonte = inspect.getsource(login._try_solve_captcha)
     assert "solve_hcaptcha(page)" in fonte
     assert "on_manual_challenge" not in fonte
+
+
+# ══ Politica POR TIPO — allowlist da representacao ══════════════════════════
+#
+# Na run real o portal apresentou `cartao_animal` e o solver tentou: 3 rodadas,
+# 12 capturas de frame, chamadas ao modelo — para cair na intervencao humana do
+# mesmo jeito. So `grade` e `grade_fused` sao tentados aqui.
+
+def test_allowlist_tem_exatamente_grade_e_grade_fused():
+    assert login.TIPOS_AUTOMATICOS_REPRESENTACAO == (TIPO_GRADE, TIPO_GRADE_FUSED)
+
+
+@pytest.mark.parametrize("tipo", [TIPO_GRADE, TIPO_GRADE_FUSED])
+def test_b_c_tipos_da_allowlist_sao_tentados(solver, tipo, capsys):
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=tipo)
+    cb = _chamador([login.CONTINUAR])
+
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=cb) is True
+    assert solver["chamadas"] == 1
+    assert cb.estado["chamadas"] == 0
+    assert f"tipo={tipo}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("tipo", [TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
+                                  TIPO_DESCONHECIDO])
+def test_d_e_f_tipos_fora_da_allowlist_vao_direto_ao_humano(solver, tipo, capsys):
+    """ZERO chamada ao solver: nem captura de frames, nem Gemini."""
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=tipo)
+
+    def humano(*, segundos_restantes):
+        portal.representar(CNPJ_ALVO)
+        return login.CONTINUAR
+
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=humano) is True
+    assert solver["chamadas"] == 0
+    assert f"requer validação manual | tipo={tipo}" in capsys.readouterr().out
+
+
+def test_d_cartao_animal_reproduz_a_run_real(solver):
+    """O caso exato que a execucao produziu."""
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_CARTAO_ANIMAL)
+    chamadas = []
+
+    def humano(*, segundos_restantes):
+        chamadas.append(segundos_restantes)
+        portal.representar(CNPJ_ALVO)
+        return login.CONTINUAR
+
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=humano) is True
+    assert solver["chamadas"] == 0          # nada de 12 frames
+    assert len(chamadas) == 1               # humano chamado IMEDIATAMENTE
+
+
+def test_h_background_com_grade_resolve_sozinho(solver):
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE)
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=None) is True
+    assert solver["chamadas"] == 1
+
+
+def test_i_background_com_cartao_animal_pede_intervencao(solver):
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_CARTAO_ANIMAL)
+    with pytest.raises(login.RepresentacaoRequerIntervencao):
+        login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
+                                           on_manual_challenge=None)
+    assert solver["chamadas"] == 0          # nem tentou, e nem devia
+
+
+def test_n_continuar_cedo_demais_mantem_o_mesmo_deadline(solver):
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_CARTAO_ANIMAL)
+    restantes = []
+
+    def humano(*, segundos_restantes):
+        restantes.append(segundos_restantes)
+        if len(restantes) >= 3:
+            portal.representar(CNPJ_ALVO)
+        return login.CONTINUAR
+
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=humano,
+        prazo_intervencao_s=300.0) is True
+    assert restantes == sorted(restantes, reverse=True)   # deadline nao reinicia
+    assert solver["chamadas"] == 0
+
+
+def test_o_solver_global_mantem_todos_os_tipos():
+    """A allowlist e politica DESTE fluxo — nada foi removido do resolvedor."""
+    import resolvedor_captcha
+    assert TIPO_CARTAO_ANIMAL in resolvedor_captcha.TIPOS_CONHECIDOS
+    assert TIPO_IMAGEM in resolvedor_captcha.TIPOS_CONHECIDOS
+    assert hasattr(resolvedor_captcha.solver, "_solve_cartao_animal")
+    assert hasattr(resolvedor_captcha.solver, "_solve_imagem")
