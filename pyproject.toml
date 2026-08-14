@@ -16,3 +16,13 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["servicos_rf_login*"]
+
+[dependency-groups]
+# Ferramentas de desenvolvimento — NAO sao dependencias de runtime.
+# Instalacao: pip install --group dev   (requer pip >= 25.1)
+dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# O pacote esta na raiz do repo; sem isto `pytest` direto nao o encontra.
+pythonpath = ["."]

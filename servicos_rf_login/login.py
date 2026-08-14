@@ -31,6 +31,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -40,6 +41,23 @@ from patchright.sync_api import sync_playwright
 from resolvedor_captcha import solve_hcaptcha
 
 from .log_manager import registrar_erro
+
+
+def host_da_url(url) -> str:
+    """Somente o hostname. Nunca path, query ou fragment.
+
+    A URL do fluxo OAuth do gov.br carrega `state`, `nonce` e `code_challenge`
+    na query — e, em algumas etapas, o identificador do contribuinte. Nada
+    disso tem valor operacional: o que se acompanha, esperando o
+    redirecionamento, e em QUAL host o navegador esta.
+
+    Devolve "?" quando nao ha host legivel, para que o log nunca vire uma
+    excecao nem caia no fallback de imprimir a URL inteira.
+    """
+    try:
+        return urlsplit(str(url or "")).hostname or "?"
+    except ValueError:
+        return "?"
 
 try:
     from .cert_dialog import selecionar_certificado_no_dialogo as _selecionar_cert_dialog
@@ -767,8 +785,8 @@ def main(
             # Aguarda redirecionamento final (até 60s)
             print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
             for _seg in range(60):
-                _url_atual = page.url
-                print(f"  -> ({_seg + 1}s) URL: {_url_atual}")
+                print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
+                      f"host={host_da_url(page.url)}")
                 if _ja_logado(page):
                     print("  -> Redirecionamento confirmado.")
                     break
