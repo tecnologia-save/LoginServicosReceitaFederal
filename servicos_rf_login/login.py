@@ -38,7 +38,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from patchright.sync_api import sync_playwright
-from resolvedor_captcha import solve_hcaptcha
+from resolvedor_captcha import captcha_presente, solve_hcaptcha
 
 from .log_manager import registrar_erro
 
@@ -456,11 +456,158 @@ def _normalizar_cnpj(valor: str) -> str:
     return re.sub(r"\D", "", str(valor)).zfill(14)
 
 
-def _representar_cnpj_procurador(page, cnpj: str) -> bool:
-    """Representa o CNPJ como Procurador no portal Serviços RF.
+# ──────────────────────────────────────────────────────────────────────────────
+# Representação de perfil — pós-condição e intervenção humana
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# CLICAR EM "Representar" NÃO É SUCESSO. Numa execução real o portal apresentou
+# um SEGUNDO captcha logo após o clique; o perfil não trocou, o código registrou
+# "Representação enviada", seguiu adiante, não conseguiu capturar token e a API
+# respondeu 401 — a planilha saiu só com cabeçalhos.
+#
+# A pós-condição vem do DOM observado do portal em três estados. Enquanto a
+# sessão é pessoal — inclusive DURANTE o captcha — não existe `representacao-atual`.
+# Ela só aparece quando a representação vigora, e traz dentro o documento
+# representado. Por isso a prova é a presença DESSE elemento com o documento
+# certo, e não avatar visível, modal fechado, clique realizado ou token obtido.
+#
+# Seletores deliberadamente semânticos. `_ngcontent-*`/`_nghost-*` são gerados
+# pelo Angular a cada build e não são contrato de coisa alguma.
+SEL_REPRESENTACAO_ATUAL = "representacao-atual"
+SEL_DOCUMENTO_REPRESENTADO = "representacao-atual .ni-representacao"
+SEL_PAPEL_REPRESENTACAO = "#avatar-dropdown-trigger .papel-representacao"
 
-    Fluxo: abre menu avatar → preenche CNPJ → seleciona Procurador → clica Representar.
-    Até 3 tentativas em caso de falha.
+PAPEL_ESPERADO = "procurador"
+
+# Janela curta para o SPA refletir a troca antes de concluirmos que ela não
+# ocorreu. Curta de propósito: quando há captcha, esperar mais não muda nada.
+ESPERA_POS_CONDICAO_S = 8.0
+INTERVALO_POS_CONDICAO_S = 0.5
+
+CONTINUAR = "continuar"
+CANCELAR = "cancelar"
+EXPIRADO = "expirado"
+
+
+class RepresentacaoNaoConfirmada(RuntimeError):
+    """O portal não confirmou a representação e não há captcha para explicar.
+
+    Mensagem constante: nem o documento solicitado nem o encontrado entram aqui.
+    """
+
+
+class RepresentacaoRequerIntervencao(RuntimeError):
+    """Há captcha na representação e ninguém pode resolvê-lo nesta execução."""
+
+
+class RepresentacaoCancelada(RuntimeError):
+    """A validação manual foi cancelada por quem operava."""
+
+
+class RepresentacaoExpirada(RuntimeError):
+    """A validação manual não foi concluída dentro do prazo."""
+
+
+def _texto_do_seletor(page, seletor: str) -> str | None:
+    """Texto do primeiro elemento, ou None se ele não existir/estiver ilegível."""
+    try:
+        loc = page.locator(seletor).first
+        if loc.count() == 0:
+            return None
+        return loc.inner_text()
+    except Exception:  # noqa: BLE001 — ausência e erro dão no mesmo: sem prova
+        return None
+
+
+def _perfil_representado(page, cnpj_alvo: str) -> bool:
+    """O perfil ATIVO é o CNPJ solicitado, como Procurador?
+
+    Compara internamente; nenhum dos dois documentos vai para log. Devolve
+    False em qualquer indeterminação — sem prova não há representação.
+    """
+    documento = _texto_do_seletor(page, SEL_DOCUMENTO_REPRESENTADO)
+    if documento is None:
+        return False
+    if _normalizar_cnpj(documento) != _normalizar_cnpj(cnpj_alvo):
+        return False
+
+    # Defesa adicional: o mesmo documento poderia estar ativo sob outro papel.
+    papel = _texto_do_seletor(page, SEL_PAPEL_REPRESENTACAO)
+    if papel is None:
+        return False
+    return PAPEL_ESPERADO in " ".join(papel.split()).casefold()
+
+
+def _aguardar_perfil_representado(page, cnpj_alvo: str,
+                                  limite_s: float = ESPERA_POS_CONDICAO_S) -> bool:
+    """Espera curta pela pós-condição. Não é retry do clique: é só latência."""
+    fim = time.monotonic() + limite_s
+    while True:
+        if _perfil_representado(page, cnpj_alvo):
+            return True
+        if time.monotonic() >= fim:
+            return False
+        time.sleep(INTERVALO_POS_CONDICAO_S)
+
+
+def _ha_captcha(page) -> bool:
+    """Só DETECÇÃO. Este desafio não é resolvido automaticamente."""
+    try:
+        return bool(captcha_presente(page))
+    except Exception:  # noqa: BLE001 — indeterminado é "não detectei"
+        return False
+
+
+def _preencher_formulario_representacao(page, cnpj: str) -> None:
+    """Abre o avatar, preenche o identificador, escolhe Procurador e envia."""
+    print("[cnpj] Clicando no avatar...")
+    avatar = page.locator('#avatar-dropdown-trigger').first
+    avatar.wait_for(state="visible", timeout=20_000)
+    avatar.click()
+
+    print("[cnpj] Preenchendo identificador do perfil PJ...")
+    campo = page.locator('#input-representar-cpfcnpj').first
+    campo.wait_for(state="visible", timeout=10_000)
+    campo.fill(cnpj)
+
+    print("[cnpj] Selecionando Procurador...")
+    ng_select = page.locator(
+        'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]'
+        '/br-select/div/div/div[1]/ng-select'
+    ).first
+    ng_select.wait_for(state="visible", timeout=10_000)
+    ng_select.click()
+
+    opcao = page.get_by_role("option", name="Procurador").first
+    opcao.wait_for(state="visible", timeout=5_000)
+    opcao.click()
+
+    print("[cnpj] Clicando em Representar...")
+    btn = page.locator(
+        'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
+    ).first
+    btn.wait_for(state="visible", timeout=10_000)
+    btn.click()
+    print("[cnpj] Representação solicitada.")
+
+
+def _representar_cnpj_procurador(page, cnpj: str, *,
+                                 on_manual_challenge=None,
+                                 prazo_intervencao_s: float = 300.0) -> bool:
+    """Representa o CNPJ como Procurador e CONFIRMA que o perfil trocou.
+
+    `on_manual_challenge` é opcional e BLOQUEANTE: chamado apenas quando há
+    captcha na representação, deve devolver `CONTINUAR`, `CANCELAR` ou
+    `EXPIRADO`. Recebe `segundos_restantes` do prazo TOTAL. A biblioteca não
+    conhece a interface que o implementa — janela, terminal ou outra coisa é
+    decisão de quem injeta.
+
+    `prazo_intervencao_s` é um deadline MONOTÔNICO total: reabrir a intervenção
+    não reinicia a contagem, senão uma sequência de tentativas esticaria a
+    espera indefinidamente.
+
+    Devolve True só com a pós-condição confirmada. Nunca devolve True por
+    clique realizado. Levanta uma das exceções tipadas acima quando não confirma.
     """
     cnpj = _normalizar_cnpj(cnpj)
     print("[cnpj] Iniciando representação do perfil PJ como Procurador...")
@@ -473,50 +620,50 @@ def _representar_cnpj_procurador(page, cnpj: str) -> bool:
             except Exception:
                 pass
             time.sleep(1)
-
         try:
-            # 1. Abre menu do avatar
-            print("[cnpj] Clicando no avatar...")
-            avatar = page.locator('#avatar-dropdown-trigger').first
-            avatar.wait_for(state="visible", timeout=20_000)
-            avatar.click()
-
-            # 2. Preenche CNPJ
-            print("[cnpj] Preenchendo identificador do perfil PJ...")
-            campo = page.locator('#input-representar-cpfcnpj').first
-            campo.wait_for(state="visible", timeout=10_000)
-            campo.fill(cnpj)
-
-            # 3. Seleciona "Procurador" no dropdown
-            print("[cnpj] Selecionando Procurador...")
-            ng_select = page.locator(
-                'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]'
-                '/br-select/div/div/div[1]/ng-select'
-            ).first
-            ng_select.wait_for(state="visible", timeout=10_000)
-            ng_select.click()
-
-            opcao = page.get_by_role("option", name="Procurador").first
-            opcao.wait_for(state="visible", timeout=5_000)
-            opcao.click()
-
-            # 4. Clica Representar
-            print("[cnpj] Clicando em Representar...")
-            btn = page.locator(
-                'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
-            ).first
-            btn.wait_for(state="visible", timeout=10_000)
-            btn.click()
-
-            print("[cnpj] Representação enviada.")
-            return True
-
+            _preencher_formulario_representacao(page, cnpj)
+            break
         except Exception as e:
-            print(f"[cnpj] Erro na tentativa {tentativa}/3: {type(e).__name__}: {e}")
+            print(f"[cnpj] Erro na tentativa {tentativa}/3: {type(e).__name__}")
             if tentativa == 3:
-                return False
+                raise RepresentacaoNaoConfirmada(
+                    "nao foi possivel enviar o formulario de representacao.") from None
 
-    return False
+    print("[cnpj] Aguardando confirmação da representação...")
+    if _aguardar_perfil_representado(page, cnpj):
+        print("[cnpj] Perfil representado confirmado.")
+        return True
+
+    # Não confirmou. Captcha é UMA explicação possível — não a única. Sem essa
+    # separação, qualquer mudança de DOM ou portal fora do ar viraria "captcha".
+    if not _ha_captcha(page):
+        raise RepresentacaoNaoConfirmada(
+            "o portal nao confirmou a representacao do perfil.")
+
+    print("[cnpj] Validação manual necessária.")
+    if on_manual_challenge is None:
+        raise RepresentacaoRequerIntervencao(
+            "a representacao exige validacao manual e nao ha como solicita-la.")
+
+    fim = time.monotonic() + prazo_intervencao_s
+    while True:
+        restantes = fim - time.monotonic()
+        if restantes <= 0:
+            raise RepresentacaoExpirada(
+                "a validacao manual nao foi concluida no prazo.")
+
+        resposta = on_manual_challenge(segundos_restantes=restantes)
+        if resposta == CANCELAR:
+            raise RepresentacaoCancelada("a validacao manual foi cancelada.")
+        if resposta == EXPIRADO:
+            raise RepresentacaoExpirada(
+                "a validacao manual nao foi concluida no prazo.")
+
+        # CONTINUAR NÃO É CONFIRMAÇÃO. Quem confirma é o portal.
+        print("[cnpj] Aguardando confirmação da representação...")
+        if _aguardar_perfil_representado(page, cnpj):
+            print("[cnpj] Perfil representado confirmado.")
+            return True
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +679,8 @@ def main(
     cert_subject_cn: str | None = None,
     cert_serial: str = "",
     policy_ok: bool = True,
+    on_manual_challenge=None,
+    prazo_intervencao_s: float = 300.0,
 ):
     """Realiza o login nos Serviços da Receita Federal e retorna (playwright, context, page).
 
@@ -823,9 +972,14 @@ def main(
                 pass
 
             print("Representando o perfil PJ como Procurador...")
-            if not _representar_cnpj_procurador(page, cnpj):
-                registrar_erro("Login: falha ao representar o perfil PJ.")
-                print("[cnpj] Falha ao representar o perfil PJ. Retornando página sem representação.")
+            # Sem representacao confirmada NAO ha pagina utilizavel: devolve-la
+            # levaria a automacao a consultar a API com o perfil pessoal e
+            # receber 401 — que foi o desfecho da run do QA. A excecao tipada
+            # sobe; o `except` abaixo encerra o Playwright antes de propagar.
+            _representar_cnpj_procurador(
+                page, cnpj,
+                on_manual_challenge=on_manual_challenge,
+                prazo_intervencao_s=prazo_intervencao_s)
     except Exception:
         # Falha inesperada: encerra o Playwright para não vazar o event loop
         # (a próxima tentativa falharia com 'Sync API inside the asyncio loop').
