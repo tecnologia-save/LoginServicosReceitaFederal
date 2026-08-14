@@ -492,6 +492,15 @@ CANCELAR = "cancelar"
 EXPIRADO = "expirado"
 
 
+class FalhaDoResolvedorCaptcha(RuntimeError):
+    """O resolvedor automático falhou TECNICAMENTE — não é caso de humano.
+
+    Chave ausente, dependência indisponível, página morta. Mascarar isso como
+    "o usuário precisa resolver o captcha" abriria uma janela que não resolve
+    nada e esconderia o defeito real.
+    """
+
+
 class RepresentacaoNaoConfirmada(RuntimeError):
     """O portal não confirmou a representação e não há captcha para explicar.
 
@@ -600,8 +609,8 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
     """Representa o CNPJ como Procurador e CONFIRMA que o perfil trocou.
 
     `on_manual_challenge` é opcional e BLOQUEANTE: chamado apenas quando há
-    captcha na representação, deve devolver `CONTINUAR`, `CANCELAR` ou
-    `EXPIRADO`. Recebe `segundos_restantes` do prazo TOTAL. A biblioteca não
+    captcha na representação **e a resolução automática não bastou**, deve
+    devolver `CONTINUAR`, `CANCELAR` ou `EXPIRADO`. Recebe `segundos_restantes` do prazo TOTAL. A biblioteca não
     conhece a interface que o implementa — janela, terminal ou outra coisa é
     decisão de quem injeta.
 
@@ -639,6 +648,40 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
 
     # Não confirmou. Captcha é UMA explicação possível — não a única. Sem essa
     # separação, qualquer mudança de DOM ou portal fora do ar viraria "captcha".
+    if not _ha_captcha(page):
+        raise RepresentacaoNaoConfirmada(
+            "o portal nao confirmou a representacao do perfil.")
+
+    # ── Tentativa AUTOMÁTICA antes de qualquer janela ────────────────────────
+    #
+    # Nem todo desafio aqui é dos que a automação não sabe resolver: o portal
+    # também apresenta formatos que o resolvedor já trata. Chamar o humano
+    # antes de tentar seria pedir trabalho manual para algo automatizável — e,
+    # em background, transformaria em falha uma run que teria terminado sozinha.
+    #
+    # O veredito do solver é registrado mas NÃO decide nada: quem decide é a
+    # pós-condição do perfil. `True` do solver também significa "não havia
+    # captcha", e resolver o desafio não é o mesmo que o portal ter trocado o
+    # perfil.
+    print("[cnpj] Desafio detectado; tentando resolução automática...")
+    try:
+        automatico = solve_hcaptcha(page)
+    # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
+    # formas — chave ausente, dependência indisponível, página morta — e todas
+    # significam a mesma coisa aqui: erro técnico, não trabalho para humano.
+    except Exception as e:  # noqa: BLE001
+        raise FalhaDoResolvedorCaptcha(
+            f"o resolvedor de captcha falhou tecnicamente ({type(e).__name__})."
+        ) from None
+    print(f"[cnpj] Resolução automática: {'concluída' if automatico else 'não concluída'}.")
+
+    print("[cnpj] Aguardando confirmação da representação...")
+    if _aguardar_perfil_representado(page, cnpj):
+        print("[cnpj] Perfil representado confirmado.")
+        return True
+
+    # O desafio pode ter sumido sem que o perfil trocasse — aí não há o que um
+    # humano resolva, e chamar a janela só adiaria o diagnóstico.
     if not _ha_captcha(page):
         raise RepresentacaoNaoConfirmada(
             "o portal nao confirmou a representacao do perfil.")

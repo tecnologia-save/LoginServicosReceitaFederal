@@ -39,14 +39,22 @@ class Portal:
         self.representar_clicado = 0
         self.documento_digitado = None
         self.ao_representar = None      # o que o portal faz apos o clique
+        self.captcha_automatizavel = False
 
     # ── acoes do teste ───────────────────────────────────────────────────────
     def representar(self, documento, papel="Procurador"):
         self.perfil = Perfil(documento, papel)
         self.captcha = False
 
-    def exigir_captcha(self):
+    def exigir_captcha(self, automatizavel=False):
+        """O portal exibiu um desafio.
+
+        `automatizavel=True` modela o formato que o resolvedor JA trata: o
+        duble do solver resolve e o portal representa. E a diferenca entre o
+        cenario 2 e o 3.
+        """
         self.captcha = True
+        self.captcha_automatizavel = automatizavel
 
 
 class _Locator:

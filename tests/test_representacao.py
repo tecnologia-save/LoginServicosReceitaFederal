@@ -27,16 +27,8 @@ from servicos_rf_login import login
 
 
 @pytest.fixture(autouse=True)
-def sem_espera(monkeypatch):
-    """Tempo virtual: `sleep` avanca o relogio que `monotonic` le.
-
-    Sem isto a espera da pos-condicao e o deadline de 5 min viram espera REAL.
-    """
-    agora = {"t": 1_000.0}
-    monkeypatch.setattr(login.time, "sleep",
-                        lambda s=0.0: agora.__setitem__("t", agora["t"] + max(float(s or 0), 0.01)))
-    monkeypatch.setattr(login.time, "monotonic",
-                        lambda: agora.__setitem__("t", agora["t"] + 0.001) or agora["t"])
+def _tempo(relogio_virtual):
+    """Relogio virtual em todo o arquivo — ver conftest."""
 
 
 def _pagina(**kw):
@@ -133,7 +125,7 @@ def test_1_sem_captcha_confirma_sem_chamar_o_callback(capsys):
     assert "Perfil representado confirmado" in capsys.readouterr().out
 
 
-def test_2_captcha_resolvido_apos_continuar_confirma(capsys):
+def test_2_captcha_resolvido_apos_continuar_confirma(capsys, solver):
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
 
@@ -148,7 +140,7 @@ def test_2_captcha_resolvido_apos_continuar_confirma(capsys):
     assert "Perfil representado confirmado" in saida
 
 
-def test_3_continuar_cedo_demais_nao_confirma_e_reabre():
+def test_3_continuar_cedo_demais_nao_confirma_e_reabre(solver):
     """CONTINUAR nao e' confirmacao — quem confirma e' o portal."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
@@ -165,7 +157,7 @@ def test_3_continuar_cedo_demais_nao_confirma_e_reabre():
     assert tentativas["n"] == 3
 
 
-def test_4_cancelar_interrompe_sem_confirmar():
+def test_4_cancelar_interrompe_sem_confirmar(solver):
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
     with pytest.raises(login.RepresentacaoCancelada):
@@ -173,7 +165,7 @@ def test_4_cancelar_interrompe_sem_confirmar():
             pagina, CNPJ_ALVO, on_manual_challenge=_chamador([login.CANCELAR]))
 
 
-def test_5_timeout_do_callback_interrompe():
+def test_5_timeout_do_callback_interrompe(solver):
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
     with pytest.raises(login.RepresentacaoExpirada):
@@ -181,7 +173,7 @@ def test_5_timeout_do_callback_interrompe():
             pagina, CNPJ_ALVO, on_manual_challenge=_chamador([login.EXPIRADO]))
 
 
-def test_5_deadline_total_e_monotonico():
+def test_5_deadline_total_e_monotonico(solver):
     """Reabrir a intervencao NAO reinicia os 5 minutos."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
@@ -196,7 +188,7 @@ def test_5_deadline_total_e_monotonico():
     assert restantes[0] <= 30.0
 
 
-def test_6_sem_callback_pede_intervencao_em_vez_de_seguir():
+def test_6_sem_callback_pede_intervencao_em_vez_de_seguir(solver):
     """Background: ninguem pode resolver, e seguir seria o defeito de novo."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
@@ -205,7 +197,7 @@ def test_6_sem_callback_pede_intervencao_em_vez_de_seguir():
                                            on_manual_challenge=None)
 
 
-def test_7_perfil_errado_nao_e_sucesso():
+def test_7_perfil_errado_nao_e_sucesso(solver):
     """Representou, mas outra empresa: nao e' sucesso, e nao e' captcha."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.representar(CNPJ_OUTRO)
@@ -213,7 +205,7 @@ def test_7_perfil_errado_nao_e_sucesso():
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO)
 
 
-def test_8_sem_confirmacao_e_sem_captcha_e_erro_proprio():
+def test_8_sem_confirmacao_e_sem_captcha_e_erro_proprio(solver):
     """Portal mudou ou caiu — nao pode virar "captcha" por eliminacao."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: None      # nada acontece
@@ -221,16 +213,19 @@ def test_8_sem_confirmacao_e_sem_captcha_e_erro_proprio():
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO)
 
 
-def test_captcha_nunca_e_resolvido_automaticamente(monkeypatch):
-    """Este segundo desafio vai para intervencao humana, ponto."""
-    def proibido(*_a, **_k):
-        raise AssertionError("solve_hcaptcha nao pode ser chamado aqui")
+def test_o_humano_so_e_chamado_depois_da_tentativa_automatica(solver):
+    """Contrato corrigido: o solver e' tentado ANTES da janela.
 
-    monkeypatch.setattr(login, "solve_hcaptcha", proibido)
+    A versao anterior deste teste afirmava o oposto — que o solver nunca era
+    chamado neste caminho. Isso pedia trabalho manual para desafios que a
+    automacao ja resolve e, em background, transformava em falha uma run que
+    teria terminado sozinha.
+    """
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha()
     with pytest.raises(login.RepresentacaoRequerIntervencao):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO)
+    assert solver["chamadas"] == 1
 
 
 def test_documento_digitado_e_o_solicitado():
@@ -247,7 +242,7 @@ def test_documento_digitado_e_o_solicitado():
     (lambda p: p.representar(CNPJ_OUTRO), login.RepresentacaoNaoConfirmada),
     (lambda p: None, login.RepresentacaoNaoConfirmada),
 ])
-def test_o_sem_confirmacao_a_funcao_nunca_devolve_sucesso(preparar, esperada):
+def test_o_sem_confirmacao_a_funcao_nunca_devolve_sucesso(preparar, esperada, solver):
     """A porta para token/API e' o `True`. Sem confirmacao, ele nao existe."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: preparar(p)
@@ -273,7 +268,7 @@ def test_o_falso_positivo_antigo_nao_existe_mais():
 # ══ P · Logs sem documento ══════════════════════════════════════════════════
 
 @pytest.mark.parametrize("cenario", ["sucesso", "captcha", "outro"])
-def test_nenhum_documento_aparece_no_log(capsys, cenario):
+def test_nenhum_documento_aparece_no_log(capsys, cenario, solver):
     pagina, portal = _pagina()
     portal.ao_representar = {
         "sucesso": lambda p: p.representar(CNPJ_ALVO),
