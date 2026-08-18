@@ -35,24 +35,43 @@ TEXTO_SENSIVEL = "Aguarde, pelo menos, 30 segundos para representar SEGREDO_TEST
 
 
 class _Loc:
-    def __init__(self, texto=None, visivel=True):
-        self._texto = texto
-        self._visivel = visivel
+    """Locator com N elementos, cada um com sua propria visibilidade.
+
+    `.mensagemErro` pode ter mais de um match: o portal mantem spans ocultos, e
+    o contrato e "QUALQUER visivel".
+    """
+
+    def __init__(self, itens=(), idx=None):
+        # itens: lista de (texto, visivel)
+        self._itens = list(itens)
+        self._idx = idx
 
     @property
     def first(self):
-        return self
+        return self.nth(0)
+
+    def nth(self, i):
+        return _Loc(self._itens, idx=i)
 
     def count(self):
-        return 0 if self._texto is None else 1
+        return len(self._itens)
+
+    def _atual(self):
+        i = 0 if self._idx is None else self._idx
+        return self._itens[i] if i < len(self._itens) else (None, False)
 
     def is_visible(self):
-        return self._visivel
+        return bool(self._atual()[1])
 
     def inner_text(self):
-        if self._texto is None:
+        texto = self._atual()[0]
+        if texto is None:
             raise RuntimeError("sem elemento")
-        return self._texto
+        return texto
+
+
+def _um(texto, visivel=True):
+    return _Loc([(texto, visivel)]) if texto is not None else _Loc()
 
 
 class _Teclado:
@@ -72,7 +91,7 @@ class Portal:
         self.roteiro = list(roteiro)
         self.documento = documento
         self.papel = papel
-        self.texto_erro = texto_erro
+        self.mensagens = [(texto_erro, True)]
         self.tipo = tipo
 
         self.estado = "inicial"
@@ -85,12 +104,12 @@ class Portal:
 
     def locator(self, seletor):
         if seletor == login.SEL_MENSAGEM_ERRO_REPRESENTACAO:
-            return _Loc(self.texto_erro if self.estado == "erro" else None)
+            return _Loc(self.mensagens if self.estado == "erro" else [])
         if seletor == login.SEL_DOCUMENTO_REPRESENTADO:
-            return _Loc(self.documento if self.estado == "confirmada" else None)
+            return _um(self.documento if self.estado == "confirmada" else None)
         if seletor == login.SEL_PAPEL_REPRESENTACAO:
-            return _Loc(self.papel if self.estado == "confirmada" else None)
-        return _Loc(None)
+            return _um(self.papel if self.estado == "confirmada" else None)
+        return _Loc()
 
     # ── ganchos substituidos ────────────────────────────────────────────────
 
@@ -203,19 +222,28 @@ def test_perfil_confirmado_vence_mensagem_residual(portal):
     """RED 6: com os dois na tela, quem decide e a pos-condicao."""
     p = portal(Portal(["confirma"]))
     p.locator_original = p.locator
-    p.locator = lambda sel: (_Loc("mensagem antiga")
+    p.locator = lambda sel: (_um("mensagem antiga")
                              if sel == login.SEL_MENSAGEM_ERRO_REPRESENTACAO
                              else p.locator_original(sel))
     assert representar(p) is True
     assert p.envios == 1
 
 
-def test_sem_erro_e_sem_captcha_continua_nao_confirmada(portal):
-    """RED 7: o desfecho de sempre, preservado."""
+def test_tres_tentativas_sem_desfecho_terminam_nao_confirmada(portal):
+    """PREMISSA INVALIDADA PELO QA.
+
+    Este teste dizia `envios == 1`: "sem erro e sem captcha" era falha
+    definitiva na primeira tentativa. A run de 16:56 mostrou exatamente esse
+    caminho — login concluido, representacao enviada, nenhum sinal observavel,
+    e o fluxo desistindo sem nunca ter tentado de novo.
+
+    O desfecho final continua o mesmo; o que mudou e quantas vezes se tenta
+    antes dele.
+    """
     p = portal(Portal(["nada"]))
     with pytest.raises(login.RepresentacaoNaoConfirmada):
         representar(p)
-    assert p.envios == 1        # nao ha o que tentar de novo
+    assert p.envios == login.MAX_TENTATIVAS_REPRESENTACAO
 
 
 def test_documento_diferente_nao_confirma(portal):
@@ -335,3 +363,188 @@ def test_o_perfil_confirmado_durante_o_intervalo_encerra_na_hora(portal):
     p.locator = locator
     assert representar(p) is True
     assert p.envios == 1
+
+
+# ══ 5 · A run de 16:56 — indeterminado nao pode ser terminal ════════════════
+#
+# 16:56:30 login concluido; 16:56:36 representacao solicitada; 16:56:41 falha.
+# Nao houve `Desafio automatizavel detectado`, nem `O portal recusou`, nem
+# perfil confirmado. A representacao caiu no estado sem desfecho observavel — e
+# esse estado era TERMINAL, com zero retry.
+#
+# Duas coisas se somavam: a janela de 8 s nasceu como latencia do PERFIL e
+# passou a governar uma maquina de estados maior, e "nada visto" era tratado
+# como "nada ha".
+
+def test_sem_desfecho_na_primeira_janela_ainda_tem_segunda_tentativa(portal):
+    """RED da run: nada aparece, e o fluxo tenta de novo em vez de desistir."""
+    p = portal(Portal(["nada", "confirma"]))
+    assert representar(p) is True
+    assert p.envios == 2
+
+
+def test_a_segunda_tentativa_respeita_o_intervalo_desde_o_ENVIO(portal):
+    """Protecao contra dupla submissao: a solicitacao anterior pode estar em
+    processamento. O intervalo conta do envio, nao do fim da observacao."""
+    p = portal(Portal(["nada", "confirma"]))
+    inicio = p.relogio[0]
+    representar(p)
+    assert p.relogio[0] - inicio >= login.COOLDOWN_ERRO_REPRESENTACAO_S
+
+
+def test_sem_desfecho_nao_diz_que_o_portal_recusou(portal, capsys):
+    """Nao vimos `.mensagemErro`: afirmar recusa seria inventar evidencia."""
+    p = portal(Portal(["nada", "confirma"]))
+    representar(p)
+    saida = capsys.readouterr().out
+    assert "Nenhum desfecho observável dentro da janela." in saida
+    assert "Portal recusou a tentativa" not in saida
+
+
+def test_tres_sem_desfecho_nao_viram_rejeicao_do_portal(portal):
+    """Sem `.mensagemErro` nenhuma, o desfecho tipado e o de nao confirmada."""
+    p = portal(Portal(["nada"]))
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+
+
+def test_a_janela_de_desfecho_cobre_o_captcha_de_onze_segundos(portal):
+    """O RED mais importante: tempo JA OBSERVADO em producao.
+
+    Numa run anterior a representacao foi pedida as 16:17:16 e o desafio so foi
+    detectado as 16:17:27 — 11 s depois. Com a janela de 8 s daquele desenho,
+    isso viraria "sem desfecho".
+    """
+    assert login.ESPERA_DESFECHO_REPRESENTACAO_S >= 11.0
+
+    p = portal(Portal(["captcha_confirma"]))
+    inicio = p.relogio[0]
+    p.estado = "inicial"
+    original = p.ha_captcha
+
+    def ha_captcha():
+        # O iframe so aparece 11 s depois do clique.
+        if p.relogio[0] - inicio >= 11.0 and p.estado == "inicial":
+            p.estado = "captcha"
+        return original()
+
+    p.ha_captcha = ha_captcha
+    assert representar(p) is True
+    assert p.envios == 1
+    assert p.solves == 1
+
+
+def test_a_janela_de_desfecho_e_uma_constante_propria(portal):
+    """Responsabilidades distintas: latencia do perfil x tempo para QUALQUER
+    desfecho. Amarrar as duas na mesma constante foi o que estreitou a janela."""
+    assert (login.ESPERA_DESFECHO_REPRESENTACAO_S
+            != login.ESPERA_POS_CONDICAO_S)
+
+
+# ══ 6 · `.mensagemErro`: QUALQUER visivel, nao a primeira ═══════════════════
+
+def test_primeira_mensagem_oculta_e_segunda_visivel_conta_como_erro(portal):
+    """RED do `.first`: o portal mantem span oculto na frente no DOM."""
+    p = portal(Portal(["erro", "confirma"]))
+    p.mensagens = [("oculta", False), (TEXTO_SENSIVEL, True)]
+    assert representar(p) is True
+    assert p.envios == 2
+
+
+def test_todas_as_mensagens_ocultas_nao_sao_erro(portal):
+    """Existir no DOM nao basta — o contrato e VISIVEL."""
+    p = portal(Portal(["erro"]))
+    p.mensagens = [("oculta", False), ("tambem oculta", False)]
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)          # sem erro VISIVEL, o caminho e o de sem-resposta
+
+
+def test_o_detector_le_todos_os_elementos():
+    """Unitario do detector, sem a maquina de estados em volta."""
+    class _P:
+        def __init__(self, itens):
+            self.itens = itens
+
+        def locator(self, _sel):
+            return _Loc(self.itens)
+
+    assert login._erro_representacao_visivel(_P([("a", False), ("b", True)])) is True
+    assert login._erro_representacao_visivel(_P([("a", False)])) is False
+    assert login._erro_representacao_visivel(_P([])) is False
+    assert login._erro_representacao_visivel(_P([("a", True)])) is True
+
+
+def test_o_detector_nao_le_o_texto():
+    """Gate: `inner_text` no detector abriria caminho para o texto no log."""
+    import inspect
+    fonte = inspect.getsource(login._erro_representacao_visivel)
+    corpo = fonte[fonte.rindex('"""') + 3:]      # so o codigo, sem o docstring
+    assert "inner_text" not in corpo
+    assert ".first" not in corpo
+
+
+# ══ 7 · Perfil de OUTRO documento nao vira retry cego ═══════════════════════
+
+def test_perfil_de_outro_documento_encerra_sem_retry(portal):
+    """Observacao EXPLICITA de representacao errada. Repetir nao conserta."""
+    p = portal(Portal(["confirma"], documento=OUTRO))
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    assert p.envios == 1
+
+
+def test_papel_errado_tambem_encerra_sem_retry(portal):
+    p = portal(Portal(["confirma"], papel="Responsável"))
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    assert p.envios == 1
+
+
+def test_o_documento_encontrado_nao_entra_no_log(portal, capsys):
+    p = portal(Portal(["confirma"], documento=OUTRO))
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    saida = capsys.readouterr()
+    assert OUTRO not in saida.out
+    assert OUTRO not in saida.err
+
+
+def test_estado_do_perfil_distingue_os_tres_casos():
+    """Unitario: ausente, outro e correto sao coisas diferentes."""
+    class _P:
+        def __init__(self, doc, papel):
+            self.doc, self.papel = doc, papel
+
+        def locator(self, sel):
+            if sel == login.SEL_DOCUMENTO_REPRESENTADO:
+                return _um(self.doc)
+            if sel == login.SEL_PAPEL_REPRESENTACAO:
+                return _um(self.papel)
+            return _Loc()
+
+    assert login._estado_do_perfil(_P(None, None), CNPJ) == login.PERFIL_AUSENTE
+    assert login._estado_do_perfil(_P(OUTRO, "Procurador"), CNPJ) == login.PERFIL_OUTRO
+    assert login._estado_do_perfil(_P(CNPJ, "Responsável"), CNPJ) == login.PERFIL_OUTRO
+    assert login._estado_do_perfil(_P(CNPJ, "Procurador"), CNPJ) == login.PERFIL_CORRETO
+
+
+# ══ 8 · Observabilidade ═════════════════════════════════════════════════════
+
+def test_cada_desfecho_observado_aparece_no_log(portal, capsys):
+    p = portal(Portal(["captcha_confirma"]))
+    representar(p)
+    saida = capsys.readouterr().out
+    assert "Aguardando desfecho da representação..." in saida
+    assert "Desfecho observado | tipo=captcha" in saida
+    assert "Desfecho observado | tipo=confirmada" in saida
+
+
+def test_presenca_de_captcha_que_nao_se_confirma_deixa_de_ser_muda(portal, capsys):
+    """Um dos dois caminhos suspeitos da run era SILENCIOSO: presenca detectada,
+    classificacao devolvendo `nenhum`, e nenhuma linha no log."""
+    p = portal(Portal(["captcha_confirma"]))
+    p.tipo = login.TIPO_NENHUM
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    assert "Presença de captcha não se confirmou na classificação." in \
+        capsys.readouterr().out
