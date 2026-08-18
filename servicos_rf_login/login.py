@@ -42,6 +42,7 @@ from resolvedor_captcha import (
     TIPO_GRADE,
     TIPO_GRADE_FUSED,
     TIPO_NENHUM,
+    abrir_desafio,
     captcha_presente,
     detectar_tipo_captcha,
     solve_hcaptcha,
@@ -750,25 +751,46 @@ def _aguardar_desfecho(page, cnpj_alvo: str,
         time.sleep(INTERVALO_POS_CONDICAO_S)
 
 
-def _esperar_intervalo(page, cnpj_alvo: str, enviado_em: float,
-                       intervalo_s: float = COOLDOWN_ERRO_REPRESENTACAO_S) -> bool:
-    """Cumpre o intervalo mínimo desde o ÚLTIMO ENVIO antes de repetir.
+def _observar_intervalo(page, cnpj_alvo: str, enviado_em: float,
+                        intervalo_s: float = COOLDOWN_ERRO_REPRESENTACAO_S,
+                        *, erro_ja_visto: bool = False) -> str:
+    """Cumpre o intervalo desde o ÚLTIMO ENVIO SEM parar de observar.
 
     Contado a partir do envio, não do fim da observação: a solicitação anterior
     pode ainda estar em processamento, e clicar de novo em cima dela é dupla
     submissão. Determinístico, sem jitter — é o throttle que o portal pediu
     ("pelo menos 30 segundos"), cumprido, não disfarçado.
 
-    Durante a espera o perfil continua sendo verificado; se confirmar, não há
-    mais nada a tentar. Devolve True nesse caso.
+    E a espera NÃO é cega. A razão de existir do intervalo é justamente que a
+    solicitação anterior pode ainda estar em curso; esperar para não duplicar e
+    ao mesmo tempo ignorar a resposta que chega durante a espera contraria o
+    próprio motivo. Observa os mesmos desfechos de `_aguardar_desfecho`, com a
+    mesma prioridade — antes só o perfil correto era percebido, e um captcha que
+    surgisse no meio do intervalo passava despercebido.
+
+    Devolve o desfecho observado, ou `DESFECHO_SEM_RESPOSTA` se o intervalo
+    acabar sem nada. Volta imediatamente quando o intervalo já passou.
+
+    `erro_ja_visto` existe porque a mensagem de recusa PERMANECE na tela: sem
+    isso, esperar o intervalo depois de uma recusa terminaria no primeiro
+    instante, relatando de novo o erro que motivou a espera — e o intervalo
+    nunca seria cumprido.
     """
     fim = enviado_em + intervalo_s
-    print("[cnpj] Aguardando intervalo antes de nova tentativa.")
-    while time.monotonic() < fim:
-        if _perfil_representado(page, cnpj_alvo):
-            return True
+    if time.monotonic() < fim:
+        print("[cnpj] Aguardando intervalo antes de nova tentativa.")
+    while True:
+        estado = _estado_do_perfil(page, cnpj_alvo)
+        if estado == PERFIL_CORRETO:
+            return DESFECHO_CONFIRMADA
+        if not erro_ja_visto and _erro_representacao_visivel(page):
+            return DESFECHO_ERRO_PORTAL
+        if _ha_captcha(page):
+            return DESFECHO_CAPTCHA
+        if time.monotonic() >= fim:
+            return (DESFECHO_PERFIL_OUTRO if estado == PERFIL_OUTRO
+                    else DESFECHO_SEM_RESPOSTA)
         time.sleep(INTERVALO_POS_CONDICAO_S)
-    return _perfil_representado(page, cnpj_alvo)
 
 
 def _restaurar_formulario(page) -> None:
@@ -788,6 +810,27 @@ def _resolver_desafio_da_representacao(page, cnpj: str, *, on_manual_challenge,
     tentativa e falha.
     """
     tipo = _tipo_do_desafio(page)          # classificação UMA vez, aqui
+    if tipo == TIPO_NENHUM and _ha_captcha(page):
+        # CHECKBOX PRESENTE não é CHALLENGE ABERTO. `detectar_tipo_captcha` só
+        # enxerga desafio aberto, então com o widget "Sou humano" ainda fechado
+        # não há tipo a classificar — e o fluxo ficava girando entre "há
+        # captcha" e "tipo nenhum" até esgotar as tentativas.
+        #
+        # `abrir_desafio` abre e NÃO resolve: a allowlist continua decidindo
+        # depois, com o tipo em mãos. Chamar `solve_hcaptcha` aqui resolveria
+        # qualquer tipo e passaria por cima dela.
+        print("[cnpj] Widget de captcha detectado; aguardando abertura do desafio.")
+        try:
+            aberto = abrir_desafio(page)
+        # BLE001: abrir é do resolvedor, e falhar aqui é erro técnico, não
+        # trabalho para humano — mesma fronteira do `solve_hcaptcha`.
+        except Exception as e:  # noqa: BLE001
+            raise FalhaDoResolvedorCaptcha(
+                f"nao foi possivel abrir o desafio ({type(e).__name__})."
+            ) from None
+        if aberto:
+            tipo = _tipo_do_desafio(page)
+
     if tipo == TIPO_NENHUM:
         # A presença detectada não se sustentou na classificação. Já foi um
         # caminho MUDO; agora ele fala, porque é indistinguível de um timeout
@@ -795,6 +838,7 @@ def _resolver_desafio_da_representacao(page, cnpj: str, *, on_manual_challenge,
         print("[cnpj] Presença de captcha não se confirmou na classificação.")
         return _aguardar_desfecho(page, cnpj)
 
+    print(f"[cnpj] Desafio aberto | tipo={tipo}")
     if tipo in TIPOS_AUTOMATICOS_REPRESENTACAO:
         print(f"[cnpj] Desafio automatizável detectado | tipo={tipo}")
         try:
@@ -911,6 +955,14 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
         print("[cnpj] Aguardando desfecho da representação...")
         desfecho = _aguardar_desfecho(page, cnpj)
 
+        if desfecho == DESFECHO_SEM_RESPOSTA:
+            print("[cnpj] Nenhum desfecho observável dentro da janela.")
+            print("[cnpj] Representação sem desfecho observável; aguardando "
+                  "intervalo antes de repetir.")
+            # A resposta da tentativa em curso ainda pode chegar. Não se envia
+            # nada por cima dela: observa-se até o intervalo completar.
+            desfecho = _observar_intervalo(page, cnpj, enviado_em)
+
         if desfecho == DESFECHO_CAPTCHA:
             print("[cnpj] Desfecho observado | tipo=captcha")
             resultado = _resolver_desafio_da_representacao(
@@ -938,17 +990,21 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
             print("[cnpj] Portal recusou a tentativa; aguardando intervalo "
                   "antes de repetir.")
             recusas += 1
-        else:
-            print("[cnpj] Nenhum desfecho observável dentro da janela.")
-            print("[cnpj] Representação sem desfecho observável; aguardando "
-                  "intervalo antes de repetir.")
 
         if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
             break
 
-        if _esperar_intervalo(page, cnpj, enviado_em):
+        # Completa o intervalo que faltar — imediato se já passou — sem deixar
+        # de observar. Um desfecho tardio aqui ainda pertence a ESTA tentativa.
+        tardio = _observar_intervalo(page, cnpj, enviado_em,
+                                     erro_ja_visto=desfecho == DESFECHO_ERRO_PORTAL)
+        if tardio == DESFECHO_CONFIRMADA:
             print("[cnpj] Perfil representado confirmado.")
             return True
+        if tardio == DESFECHO_PERFIL_OUTRO:
+            print("[cnpj] Desfecho observado | tipo=perfil_outro")
+            raise RepresentacaoNaoConfirmada(
+                "o perfil ativo nao e o solicitado.")
         _restaurar_formulario(page)
 
     if recusas == MAX_TENTATIVAS_REPRESENTACAO:

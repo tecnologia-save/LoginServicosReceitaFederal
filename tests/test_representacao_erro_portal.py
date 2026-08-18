@@ -98,6 +98,8 @@ class Portal:
         self.envios = 0
         self.solves = 0
         self.solves_kwargs = []
+        self.aberturas_de_desafio = 0
+        self.abre_desafio = True
         self.keyboard = _Teclado()
 
     # ── o codigo real chama isto ─────────────────────────────────────────────
@@ -125,6 +127,15 @@ class Portal:
     def ha_captcha(self):
         return self.estado == "captcha"
 
+    def abrir(self):
+        """`abrir_desafio`: sai do widget fechado para o desafio aberto.
+
+        `abre_desafio=False` modela o widget que nao abre — o tipo continua
+        indeterminado e o fluxo nao pode ficar girando nele.
+        """
+        self.aberturas_de_desafio += 1
+        return self.abre_desafio
+
     def resolver(self, **kwargs):
         self.solves += 1
         self.solves_kwargs.append(kwargs)
@@ -148,6 +159,7 @@ def portal(monkeypatch):
                             lambda _pg: p.tipo if p.ha_captcha() else login.TIPO_NENHUM)
         monkeypatch.setattr(login, "solve_hcaptcha",
                             lambda _pg, **kw: p.resolver(**kw))
+        monkeypatch.setattr(login, "abrir_desafio", lambda _pg, **_kw: p.abrir())
         p.relogio = agora
         return p
 
@@ -548,3 +560,151 @@ def test_presenca_de_captcha_que_nao_se_confirma_deixa_de_ser_muda(portal, capsy
         representar(p)
     assert "Presença de captcha não se confirmou na classificação." in \
         capsys.readouterr().out
+
+
+# ══ 9 · O intervalo continua observando a tentativa em curso ════════════════
+#
+# O intervalo existe porque a solicitacao anterior PODE AINDA ESTAR EM
+# PROCESSAMENTO. Esperar para nao duplicar e, ao mesmo tempo, ignorar a resposta
+# que chega durante a espera contraria o proprio motivo — e era o que acontecia:
+# entre t=20 e t=31 so o perfil correto era percebido.
+
+def test_captcha_que_surge_durante_o_intervalo_e_tratado_sem_novo_envio(portal):
+    """RED: janela de 20 s vazia, captcha em t=23, e NENHUMA segunda submissao."""
+    p = portal(Portal(["captcha_confirma"]))
+    inicio = p.relogio[0]
+    p.estado = "inicial"
+
+    def ha_captcha():
+        if p.relogio[0] - inicio >= 23.0 and p.estado == "inicial":
+            p.estado = "captcha"
+        return p.estado == "captcha"
+
+    p.ha_captcha = ha_captcha
+    assert representar(p) is True
+    assert p.envios == 1          # a resposta era da tentativa ORIGINAL
+    assert p.solves == 1
+
+
+def test_perfil_que_confirma_durante_o_intervalo_encerra_sem_novo_envio(portal):
+    p = portal(Portal(["nada"]))
+    inicio = p.relogio[0]
+    original = p.locator
+
+    def locator(sel):
+        if p.relogio[0] - inicio >= 24.0:
+            p.estado = "confirmada"
+        return original(sel)
+
+    p.locator = locator
+    assert representar(p) is True
+    assert p.envios == 1
+
+
+def test_erro_que_aparece_durante_o_intervalo_conta_como_recusa(portal):
+    """Recusa tardia e recusa: entra na conta e respeita o intervalo."""
+    p = portal(Portal(["nada", "confirma"]))
+    inicio = p.relogio[0]
+    original = p.locator
+
+    def locator(sel):
+        if p.relogio[0] - inicio >= 22.0 and p.estado == "inicial":
+            p.estado = "erro"
+        return original(sel)
+
+    p.locator = locator
+    assert representar(p) is True
+    assert p.envios == 2
+
+
+def test_o_intervalo_e_cumprido_mesmo_com_a_mensagem_ainda_na_tela(portal):
+    """A mensagem de recusa PERMANECE visivel.
+
+    Sem `erro_ja_visto`, a espera terminaria no primeiro instante relatando de
+    novo o erro que a motivou — e o intervalo nunca seria cumprido.
+    """
+    p = portal(Portal(["erro", "confirma"]))
+    inicio = p.relogio[0]
+    representar(p)
+    assert p.relogio[0] - inicio >= login.COOLDOWN_ERRO_REPRESENTACAO_S
+
+
+def test_o_intervalo_ja_vencido_nao_faz_esperar_de_novo(portal):
+    """Depois de 20 s de janela + 11 s de intervalo, nada de mais 31."""
+    p = portal(Portal(["nada", "confirma"]))
+    inicio = p.relogio[0]
+    representar(p)
+    assert p.relogio[0] - inicio < 2 * login.COOLDOWN_ERRO_REPRESENTACAO_S
+
+
+# ══ 10 · Checkbox presente nao e desafio aberto ═════════════════════════════
+#
+# `detectar_tipo_captcha` so enxerga desafio ABERTO. Com o widget "Sou humano"
+# ainda fechado nao ha tipo a classificar, e o fluxo girava entre "ha captcha" e
+# "tipo nenhum" ate esgotar as tentativas.
+
+def test_checkbox_fechado_abre_o_desafio_antes_de_classificar(portal):
+    """RED: widget visivel, desafio ainda fechado. Abrir e o que faltava."""
+    p = portal(Portal(["captcha_confirma"]))
+    tipos = iter([login.TIPO_NENHUM, login.TIPO_GRADE])
+    import servicos_rf_login.login as mod
+    mod.detectar_tipo_captcha = lambda _pg: next(tipos, login.TIPO_GRADE)
+
+    assert representar(p) is True
+    assert p.aberturas_de_desafio == 1
+    assert p.solves == 1
+    assert p.envios == 1
+
+
+def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal):
+    """A allowlist decide DEPOIS de abrir — abrir nao autoriza resolver."""
+    p = portal(Portal(["captcha_confirma"]))
+    tipos = iter([login.TIPO_NENHUM, "cartao_animal"])
+    import servicos_rf_login.login as mod
+    mod.detectar_tipo_captcha = lambda _pg: next(tipos, "cartao_animal")
+
+    chamadas = []
+
+    def manual(*, segundos_restantes):
+        chamadas.append(segundos_restantes)
+        p.estado = "confirmada"
+        return login.CONTINUAR
+
+    assert representar(p, on_manual_challenge=manual) is True
+    assert p.aberturas_de_desafio == 1
+    assert p.solves == 0                 # ZERO Gemini automatico
+    assert len(chamadas) == 1
+
+
+def test_desafio_que_nao_abre_nao_fica_girando(portal):
+    """Widget que nao vira desafio: o tipo continua indeterminado e o fluxo
+    segue o caminho de sem-resposta, sem laco infinito."""
+    p = portal(Portal(["captcha_confirma"]))
+    p.abre_desafio = False
+    import servicos_rf_login.login as mod
+    mod.detectar_tipo_captcha = lambda _pg: login.TIPO_NENHUM
+
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    assert p.solves == 0
+
+
+def test_falha_ao_abrir_o_desafio_e_erro_tecnico(portal):
+    """Abrir e do resolvedor: falhar ali nao e trabalho para humano."""
+    p = portal(Portal(["captcha_confirma"]))
+    import servicos_rf_login.login as mod
+    mod.detectar_tipo_captcha = lambda _pg: login.TIPO_NENHUM
+
+    def explodir(_pg, **_kw):
+        raise RuntimeError("pagina morta")
+
+    mod.abrir_desafio = explodir
+    with pytest.raises(login.FalhaDoResolvedorCaptcha):
+        representar(p)
+
+
+def test_o_tipo_aberto_aparece_no_log(portal, capsys):
+    p = portal(Portal(["captcha_confirma"]))
+    representar(p)
+    saida = capsys.readouterr().out
+    assert "Desafio aberto | tipo=" in saida
