@@ -537,6 +537,11 @@ DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
 # observado em produção.
 ESPERA_DESFECHO_REPRESENTACAO_S = 20.0
 
+# Quantas vezes o captcha de UMA tentativa é tratado antes de se desistir dela.
+# Existe porque a classificação pode não se sustentar (widget que não abre): sem
+# teto, "há captcha" e "tipo nenhum" se alternariam para sempre.
+MAX_TRATAMENTOS_CAPTCHA = 2
+
 # Desfechos possíveis do clique em Representar. Vocabulário FECHADO.
 DESFECHO_CONFIRMADA = "confirmada"
 DESFECHO_ERRO_PORTAL = "erro_portal"
@@ -955,56 +960,84 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
         print("[cnpj] Aguardando desfecho da representação...")
         desfecho = _aguardar_desfecho(page, cnpj)
 
-        if desfecho == DESFECHO_SEM_RESPOSTA:
-            print("[cnpj] Nenhum desfecho observável dentro da janela.")
-            print("[cnpj] Representação sem desfecho observável; aguardando "
-                  "intervalo antes de repetir.")
-            # A resposta da tentativa em curso ainda pode chegar. Não se envia
-            # nada por cima dela: observa-se até o intervalo completar.
-            desfecho = _observar_intervalo(page, cnpj, enviado_em)
+        # ── Governo dos desfechos DESTA tentativa ────────────────────────────
+        #
+        # Enquanto não houve nova submissão, tudo o que se observa pertence à
+        # tentativa em curso. Antes o desfecho descoberto durante o intervalo
+        # era observado e depois DESCARTADO: só `confirmada` e `perfil_outro`
+        # tinham efeito, e uma recusa ou um captcha tardios sumiam.
+        #
+        # Este laço é o ÚNICO lugar onde um `DESFECHO_*` tem semântica. Sair
+        # dele significa que a tentativa acabou e uma nova pode começar.
+        recusou = False
+        anunciados = set()
+        tratamentos = 0
 
-        if desfecho == DESFECHO_CAPTCHA:
-            print("[cnpj] Desfecho observado | tipo=captcha")
-            resultado = _resolver_desafio_da_representacao(
-                page, cnpj, on_manual_challenge=on_manual_challenge,
-                fim_intervencao=fim_intervencao)
-            if resultado is True:
-                desfecho = DESFECHO_CONFIRMADA
+        while True:
+            if desfecho not in anunciados:
+                print(f"[cnpj] Desfecho observado | tipo={desfecho}")
+                anunciados.add(desfecho)
+
+            if desfecho == DESFECHO_CONFIRMADA:
+                print("[cnpj] Perfil representado confirmado.")
+                return True
+
+            if desfecho == DESFECHO_PERFIL_OUTRO:
+                # Observação EXPLÍCITA de representação errada. Repetir às
+                # cegas três vezes não a transforma na certa.
+                raise RepresentacaoNaoConfirmada(
+                    "o perfil ativo nao e o solicitado.")
+
+            if desfecho == DESFECHO_CAPTCHA:
+                if tratamentos >= MAX_TRATAMENTOS_CAPTCHA:
+                    # O desafio não se resolve nem se classifica. Insistir seria
+                    # o laço que esta versão existe para não ter: o captcha
+                    # continua na tela, e reobservá-lo devolveria CAPTCHA para
+                    # sempre. A tentativa acaba aqui — cumprindo o intervalo,
+                    # e ainda atento aos dois desfechos que encerram tudo.
+                    print("[cnpj] Captcha continua presente após "
+                          f"{tratamentos} tratamento(s) — encerrando a tentativa.")
+                    if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
+                        break
+                    proximo = _observar_intervalo(page, cnpj, enviado_em,
+                                                  erro_ja_visto=recusou)
+                    if proximo in (DESFECHO_CONFIRMADA, DESFECHO_PERFIL_OUTRO):
+                        desfecho = proximo
+                        continue
+                    break
+                tratamentos += 1
+                resultado = _resolver_desafio_da_representacao(
+                    page, cnpj, on_manual_challenge=on_manual_challenge,
+                    fim_intervencao=fim_intervencao)
+                desfecho = (DESFECHO_CONFIRMADA if resultado is True
+                            else resultado)
+                continue
+
+            if desfecho == DESFECHO_ERRO_PORTAL:
+                if not recusou:
+                    recusas += 1
+                    recusou = True
+                print("[cnpj] Portal recusou a tentativa; aguardando intervalo "
+                      "antes de repetir.")
             else:
-                desfecho = resultado
+                print("[cnpj] Nenhum desfecho observável dentro da janela.")
+                print("[cnpj] Representação sem desfecho observável; aguardando "
+                      "intervalo antes de repetir.")
 
-        if desfecho == DESFECHO_CONFIRMADA:
-            print("[cnpj] Desfecho observado | tipo=confirmada")
-            print("[cnpj] Perfil representado confirmado.")
-            return True
+            if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
+                break
 
-        if desfecho == DESFECHO_PERFIL_OUTRO:
-            # Observação EXPLÍCITA de representação errada. Repetir às cegas
-            # três vezes não a transforma na certa.
-            print("[cnpj] Desfecho observado | tipo=perfil_outro")
-            raise RepresentacaoNaoConfirmada(
-                "o perfil ativo nao e o solicitado.")
-
-        if desfecho == DESFECHO_ERRO_PORTAL:
-            print("[cnpj] Desfecho observado | tipo=erro_portal")
-            print("[cnpj] Portal recusou a tentativa; aguardando intervalo "
-                  "antes de repetir.")
-            recusas += 1
+            # Completa o intervalo que faltar — imediato se já passou — sem
+            # deixar de observar. O que aparecer aqui volta a ser governado
+            # pelo mesmo laço, e não descartado.
+            proximo = _observar_intervalo(page, cnpj, enviado_em,
+                                          erro_ja_visto=recusou)
+            if proximo == DESFECHO_SEM_RESPOSTA:
+                break                  # intervalo cumprido e nada novo
+            desfecho = proximo
 
         if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
             break
-
-        # Completa o intervalo que faltar — imediato se já passou — sem deixar
-        # de observar. Um desfecho tardio aqui ainda pertence a ESTA tentativa.
-        tardio = _observar_intervalo(page, cnpj, enviado_em,
-                                     erro_ja_visto=desfecho == DESFECHO_ERRO_PORTAL)
-        if tardio == DESFECHO_CONFIRMADA:
-            print("[cnpj] Perfil representado confirmado.")
-            return True
-        if tardio == DESFECHO_PERFIL_OUTRO:
-            print("[cnpj] Desfecho observado | tipo=perfil_outro")
-            raise RepresentacaoNaoConfirmada(
-                "o perfil ativo nao e o solicitado.")
         _restaurar_formulario(page)
 
     if recusas == MAX_TENTATIVAS_REPRESENTACAO:

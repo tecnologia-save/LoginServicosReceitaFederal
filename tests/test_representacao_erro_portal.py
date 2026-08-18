@@ -643,12 +643,12 @@ def test_o_intervalo_ja_vencido_nao_faz_esperar_de_novo(portal):
 # ainda fechado nao ha tipo a classificar, e o fluxo girava entre "ha captcha" e
 # "tipo nenhum" ate esgotar as tentativas.
 
-def test_checkbox_fechado_abre_o_desafio_antes_de_classificar(portal):
+def test_checkbox_fechado_abre_o_desafio_antes_de_classificar(portal, monkeypatch):
     """RED: widget visivel, desafio ainda fechado. Abrir e o que faltava."""
     p = portal(Portal(["captcha_confirma"]))
     tipos = iter([login.TIPO_NENHUM, login.TIPO_GRADE])
-    import servicos_rf_login.login as mod
-    mod.detectar_tipo_captcha = lambda _pg: next(tipos, login.TIPO_GRADE)
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: next(tipos, login.TIPO_GRADE))
 
     assert representar(p) is True
     assert p.aberturas_de_desafio == 1
@@ -656,12 +656,12 @@ def test_checkbox_fechado_abre_o_desafio_antes_de_classificar(portal):
     assert p.envios == 1
 
 
-def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal):
+def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal, monkeypatch):
     """A allowlist decide DEPOIS de abrir — abrir nao autoriza resolver."""
     p = portal(Portal(["captcha_confirma"]))
     tipos = iter([login.TIPO_NENHUM, "cartao_animal"])
-    import servicos_rf_login.login as mod
-    mod.detectar_tipo_captcha = lambda _pg: next(tipos, "cartao_animal")
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: next(tipos, "cartao_animal"))
 
     chamadas = []
 
@@ -676,29 +676,29 @@ def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal):
     assert len(chamadas) == 1
 
 
-def test_desafio_que_nao_abre_nao_fica_girando(portal):
+def test_desafio_que_nao_abre_nao_fica_girando(portal, monkeypatch):
     """Widget que nao vira desafio: o tipo continua indeterminado e o fluxo
     segue o caminho de sem-resposta, sem laco infinito."""
     p = portal(Portal(["captcha_confirma"]))
     p.abre_desafio = False
-    import servicos_rf_login.login as mod
-    mod.detectar_tipo_captcha = lambda _pg: login.TIPO_NENHUM
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: login.TIPO_NENHUM)
 
     with pytest.raises(login.RepresentacaoNaoConfirmada):
         representar(p)
     assert p.solves == 0
 
 
-def test_falha_ao_abrir_o_desafio_e_erro_tecnico(portal):
+def test_falha_ao_abrir_o_desafio_e_erro_tecnico(portal, monkeypatch):
     """Abrir e do resolvedor: falhar ali nao e trabalho para humano."""
     p = portal(Portal(["captcha_confirma"]))
-    import servicos_rf_login.login as mod
-    mod.detectar_tipo_captcha = lambda _pg: login.TIPO_NENHUM
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: login.TIPO_NENHUM)
 
     def explodir(_pg, **_kw):
         raise RuntimeError("pagina morta")
 
-    mod.abrir_desafio = explodir
+    monkeypatch.setattr(login, "abrir_desafio", explodir)
     with pytest.raises(login.FalhaDoResolvedorCaptcha):
         representar(p)
 
@@ -708,3 +708,127 @@ def test_o_tipo_aberto_aparece_no_log(portal, capsys):
     representar(p)
     saida = capsys.readouterr().out
     assert "Desafio aberto | tipo=" in saida
+
+
+# ══ 11 · Todo DESFECHO_* tem governo — inclusive o tardio ═══════════════════
+#
+# `_observar_intervalo` passou a observar corretamente, mas quem chamava so
+# usava CONFIRMADA e PERFIL_OUTRO: um erro do portal ou um captcha descobertos
+# durante o intervalo eram observados e DESCARTADOS. Observar nao basta — o
+# desfecho observado precisa governar a execucao.
+#
+# O governo virou um laco unico: enquanto nao houve nova submissao, tudo o que
+# se observa pertence a tentativa em curso.
+
+def _apos_o_solver(p, quando, estado_novo):
+    """Depois do PRIMEIRO solver a pagina fica sem resposta por `quando` segundos.
+
+    Uma vez so: o que vem depois disso e a reacao do portal, e o duble nao pode
+    ficar reescrevendo-a a cada tratamento.
+    """
+    inicio = [None]
+    aplicado = [False]
+    resolver_real = p.resolver
+
+    def resolver(**kw):
+        resolver_real(**kw)
+        if aplicado[0]:
+            return True
+        aplicado[0] = True
+        p.estado = "inicial"          # nem perfil, nem erro, nem captcha
+        inicio[0] = p.relogio[0]
+        return True
+
+    original = p.locator
+
+    def locator(sel):
+        if inicio[0] is not None and p.relogio[0] - inicio[0] >= quando:
+            p.estado = estado_novo
+            inicio[0] = None          # uma vez so: a proxima tentativa e outra
+        return original(sel)
+
+    p.resolver, p.locator = resolver, locator
+
+
+def test_erro_do_portal_descoberto_depois_do_solver_e_contabilizado(portal, capsys):
+    """RED A: solver roda, nada aparece, `.mensagemErro` surge no intervalo.
+
+    Antes esse ERRO_PORTAL era observado e jogado fora.
+    """
+    p = portal(Portal(["captcha_erro", "confirma"]))
+    _apos_o_solver(p, quando=23.0, estado_novo="erro")
+
+    assert representar(p) is True
+    assert p.solves == 1
+    assert p.envios == 2                       # houve retry, depois do intervalo
+    assert "Desfecho observado | tipo=erro_portal" in capsys.readouterr().out
+
+
+def test_erro_tardio_respeita_o_intervalo_desde_o_envio(portal):
+    p = portal(Portal(["captcha_erro", "confirma"]))
+    _apos_o_solver(p, quando=23.0, estado_novo="erro")
+    inicio = p.relogio[0]
+    representar(p)
+    assert p.relogio[0] - inicio >= login.COOLDOWN_ERRO_REPRESENTACAO_S
+
+
+def test_tres_recusas_contando_a_tardia_terminam_rejeitadas(portal):
+    """A recusa tardia entra na CONTA, e nao so no log."""
+    p = portal(Portal(["captcha_erro", "erro", "erro"]))
+    _apos_o_solver(p, quando=23.0, estado_novo="erro")
+    with pytest.raises(login.RepresentacaoRejeitadaPeloPortal):
+        representar(p)
+
+
+def test_captcha_descoberto_no_intervalo_e_tratado_sem_novo_envio(portal):
+    """RED B: o solver roda, a janela de 20 s passa em branco, e o captcha
+    reaparece DURANTE o intervalo — ainda desta tentativa.
+
+    Nada de restaurar formulario nem clicar Representar antes de governar esse
+    estado. (Captcha que reaparece DENTRO da janela e outro caso: ali o
+    automatico ja nao bastou, e o caminho e a validacao manual.)
+    """
+    p = portal(Portal(["captcha_confirma"]))
+    _apos_o_solver(p, quando=23.0, estado_novo="captcha")
+    p._apos_captcha = "confirmada"
+
+    assert representar(p) is True
+    assert p.envios == 1                       # NENHUMA segunda submissao
+    assert p.solves == 2                       # o segundo tratamento aconteceu
+
+
+def test_captcha_que_nunca_se_resolve_nao_gira_para_sempre(portal, monkeypatch):
+    """Teto de tratamentos: sem ele, `ha captcha` e `tipo nenhum` se alternam."""
+    p = portal(Portal(["captcha_confirma"]))
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: login.TIPO_NENHUM)
+    p.abre_desafio = False
+
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    assert p.envios == login.MAX_TENTATIVAS_REPRESENTACAO
+
+
+def test_perfil_confirmado_no_intervalo_depois_do_solver(portal):
+    """RED E, na variante pos-solver."""
+    p = portal(Portal(["captcha_confirma"]))
+    _apos_o_solver(p, quando=23.0, estado_novo="confirmada")
+    assert representar(p) is True
+    assert p.envios == 1
+
+
+def test_perfil_outro_no_intervalo_depois_do_solver(portal):
+    """RED F: falha sem novo envio."""
+    p = portal(Portal(["captcha_confirma"], documento=OUTRO))
+    _apos_o_solver(p, quando=23.0, estado_novo="confirmada")
+    with pytest.raises(login.RepresentacaoNaoConfirmada):
+        representar(p)
+    assert p.envios == 1
+
+
+def test_o_mesmo_desfecho_nao_e_anunciado_duas_vezes(portal, capsys):
+    """Polling nao pode virar repeticao de log."""
+    p = portal(Portal(["erro", "confirma"]))
+    representar(p)
+    saida = capsys.readouterr().out
+    assert saida.count("Desfecho observado | tipo=erro_portal") == 1

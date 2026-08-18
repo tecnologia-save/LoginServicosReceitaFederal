@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from servicos_rf_login import login
 from servicos_rf_login.login import host_da_url
 
 FONTE = Path(__file__).resolve().parent.parent / "servicos_rf_login" / "login.py"
@@ -46,7 +47,7 @@ ATRIBUTOS_PROIBIDOS = {"url"}
 # Funcoes que SANEIAM: o que sai delas ja e seguro por construcao, e por isso a
 # varredura nao desce no argumento. Entrar aqui e decisao explicita — cada nome
 # desta lista precisa de teste proprio provando o que ele descarta.
-SANITIZADORES = {"host_da_url"}
+SANITIZADORES = {"host_da_url", "_aguardar_desfecho", "_observar_intervalo"}
 
 URL_OAUTH_SENTINELA = (
     "https://sso.acesso.gov.br/authorize?response_type=code"
@@ -69,6 +70,17 @@ def _fonte_proibida(no) -> bool:
     return False
 
 
+def _fonte_proibida_ou_saneada(no) -> bool:
+    """Como `_fonte_proibida`, mas um SANITIZADOR limpa o que passa por ele.
+
+    Sem isto, `desfecho = _aguardar_desfecho(page, cnpj)` contamina `desfecho`
+    por causa do argumento — e o vocabulario fechado que ele devolve nunca
+    poderia ser registrado. A entrada na lista custa um teste proprio: ver
+    `test_o_observador_de_desfecho_so_devolve_vocabulario_fechado`.
+    """
+    return not _saneada(no) and _fonte_proibida(no)
+
+
 def _nomes_contaminados(arvore) -> set:
     """Variaveis locais que recebem valor de uma fonte proibida.
 
@@ -76,11 +88,12 @@ def _nomes_contaminados(arvore) -> set:
     """
     contaminados = set()
     for no in ast.walk(arvore):
-        if isinstance(no, ast.Assign) and _fonte_proibida(no.value):
+        if isinstance(no, ast.Assign) and _fonte_proibida_ou_saneada(no.value):
             for alvo in no.targets:
                 if isinstance(alvo, ast.Name):
                     contaminados.add(alvo.id)
-        elif isinstance(no, ast.AnnAssign) and no.value and _fonte_proibida(no.value):
+        elif (isinstance(no, ast.AnnAssign) and no.value
+              and _fonte_proibida_ou_saneada(no.value)):
             if isinstance(no.target, ast.Name):
                 contaminados.add(no.target.id)
     return contaminados
@@ -283,3 +296,38 @@ def test_tipo_da_excecao_continua_permitido():
     """`type(e).__name__` e' diagnostico e nao carrega valor."""
     fonte = FONTE.read_text(encoding="utf-8")
     assert "type(e).__name__" in fonte
+
+
+def test_o_observador_de_desfecho_so_devolve_vocabulario_fechado():
+    """O que autoriza `_aguardar_desfecho`/`_observar_intervalo` na lista de
+    sanitizadores: o VALOR devolvido e sempre uma das constantes do modulo,
+    nunca algo derivado do documento ou da pagina.
+
+    A condicao de um ternario pode olhar o que quiser — o que sai e que importa.
+    """
+    import ast as _ast
+    import inspect
+
+    nomes = {"DESFECHO_CONFIRMADA", "DESFECHO_ERRO_PORTAL", "DESFECHO_CAPTCHA",
+             "DESFECHO_PERFIL_OUTRO", "DESFECHO_SEM_RESPOSTA"}
+
+    def _valores(no):
+        """Os valores que a expressao pode devolver."""
+        if isinstance(no, _ast.IfExp):
+            return [*_valores(no.body), *_valores(no.orelse)]
+        return [no]
+
+    for funcao in (login._aguardar_desfecho, login._observar_intervalo):
+        arvore = _ast.parse(inspect.getsource(funcao).lstrip())
+        retornos = [n for n in _ast.walk(arvore)
+                    if isinstance(n, _ast.Return) and n.value is not None]
+        assert retornos, funcao.__name__
+        for no in retornos:
+            for valor in _valores(no.value):
+                assert isinstance(valor, _ast.Name), (funcao.__name__,
+                                                      _ast.dump(valor))
+                assert valor.id in nomes, (funcao.__name__, valor.id)
+
+    # As constantes sao mesmo strings fechadas, e nao algo montado em runtime.
+    for nome in nomes:
+        assert isinstance(getattr(login, nome), str)
