@@ -42,6 +42,7 @@ from resolvedor_captcha import (
     TIPO_GRADE,
     TIPO_GRADE_FUSED,
     TIPO_NENHUM,
+    captcha_presente,
     detectar_tipo_captcha,
     solve_hcaptcha,
 )
@@ -509,6 +510,31 @@ TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE, TIPO_GRADE_FUSED)
 ESPERA_POS_CONDICAO_S = 8.0
 INTERVALO_POS_CONDICAO_S = 0.5
 
+# Mensagem de erro da representação. A CLASSE é o contrato; o texto, não — ele
+# muda e pode passar a carregar informação de quem se tenta representar.
+SEL_MENSAGEM_ERRO_REPRESENTACAO = ".mensagemErro"
+
+# Uma tentativa é a OPERAÇÃO inteira: formulário, envio, desfecho e captcha.
+MAX_TENTATIVAS_REPRESENTACAO = 3
+
+# O portal pediu "pelo menos 30 segundos". Margem mínima e determinística: não
+# há jitter nem randomização — isto é respeito ao throttle observado, não
+# técnica para parecer outra coisa.
+COOLDOWN_ERRO_REPRESENTACAO_S = 31.0
+
+# Orçamento de tempo do captcha DA REPRESENTAÇÃO. O padrão do resolvedor (30 s
+# por chamada, sem teto total) é o certo para o captcha de login e caro demais
+# aqui: numa execução real dois timeouts consecutivos consumiram mais de um
+# minuto, e o portal recusou a representação em seguida.
+TIMEOUT_GEMINI_REPRESENTACAO_MS = 10_000
+DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
+
+# Desfechos possíveis do clique em Representar. Vocabulário FECHADO.
+DESFECHO_CONFIRMADA = "confirmada"
+DESFECHO_ERRO_PORTAL = "erro_portal"
+DESFECHO_CAPTCHA = "captcha"
+DESFECHO_INDETERMINADO = "indeterminado"
+
 CONTINUAR = "continuar"
 CANCELAR = "cancelar"
 EXPIRADO = "expirado"
@@ -527,6 +553,16 @@ class RepresentacaoNaoConfirmada(RuntimeError):
     """O portal não confirmou a representação e não há captcha para explicar.
 
     Mensagem constante: nem o documento solicitado nem o encontrado entram aqui.
+    """
+
+
+class RepresentacaoRejeitadaPeloPortal(RuntimeError):
+    """O portal recusou a representação em todas as tentativas.
+
+    Distinta de `RepresentacaoNaoConfirmada`: aqui houve recusa EXPLÍCITA e
+    repetida, com o intervalo pedido cumprido entre elas. Continua sendo falha
+    técnica do fluxo para quem consome — não é caso de humano nem de retry no
+    runner.
     """
 
 
@@ -630,66 +666,112 @@ def _preencher_formulario_representacao(page, cnpj: str) -> None:
     print("[cnpj] Representação solicitada.")
 
 
-def _representar_cnpj_procurador(page, cnpj: str, *,
-                                 on_manual_challenge=None,
-                                 prazo_intervencao_s: float = 300.0) -> bool:
-    """Representa o CNPJ como Procurador e CONFIRMA que o perfil trocou.
+def _erro_representacao_visivel(page) -> bool:
+    """O portal está exibindo mensagem de erro da representação?
 
-    `on_manual_challenge` é opcional e BLOQUEANTE: chamado apenas quando há
-    captcha na representação **e a resolução automática não bastou**, deve
-    devolver `CONTINUAR`, `CANCELAR` ou `EXPIRADO`. Recebe `segundos_restantes` do prazo TOTAL. A biblioteca não
-    conhece a interface que o implementa — janela, terminal ou outra coisa é
-    decisão de quem injeta.
+    QUALQUER `.mensagemErro` visível conta. O texto NÃO é lido nem registrado:
+    ele muda com o tempo e pode passar a carregar informação de quem se tenta
+    representar. A classe é o contrato; a frase, não.
 
-    `prazo_intervencao_s` é um deadline MONOTÔNICO total: reabrir a intervenção
-    não reinicia a contagem, senão uma sequência de tentativas esticaria a
-    espera indefinidamente.
-
-    Devolve True só com a pós-condição confirmada. Nunca devolve True por
-    clique realizado. Levanta uma das exceções tipadas acima quando não confirma.
+    Numa execução real a mensagem foi "Aguarde, pelo menos, 30 segundos para
+    representar outra pessoa." — o portal recusou a tentativa depois de uma
+    resolução de captcha prolongada, e a automação lia isso como "não confirmou"
+    em vez de "tente de novo".
     """
-    cnpj = _normalizar_cnpj(cnpj)
-    print("[cnpj] Iniciando representação do perfil PJ como Procurador...")
+    try:
+        loc = page.locator(SEL_MENSAGEM_ERRO_REPRESENTACAO).first
+        if loc.count() == 0:
+            return False
+        return bool(loc.is_visible())
+    except Exception:  # noqa: BLE001 — não observar é não haver prova de erro
+        return False
 
-    for tentativa in range(1, 4):
-        if tentativa > 1:
-            print(f"[cnpj] Tentativa {tentativa}/3...")
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
-            time.sleep(1)
-        try:
-            _preencher_formulario_representacao(page, cnpj)
-            break
-        except Exception as e:
-            print(f"[cnpj] Erro na tentativa {tentativa}/3: {type(e).__name__}")
-            if tentativa == 3:
-                raise RepresentacaoNaoConfirmada(
-                    "nao foi possivel enviar o formulario de representacao.") from None
 
-    print("[cnpj] Aguardando confirmação da representação...")
-    if _aguardar_perfil_representado(page, cnpj):
-        print("[cnpj] Perfil representado confirmado.")
-        return True
+def _aguardar_desfecho(page, cnpj_alvo: str,
+                       limite_s: float = ESPERA_POS_CONDICAO_S) -> str:
+    """Observa os desfechos possíveis do clique em Representar, CONCORRENTEMENTE.
 
-    # Não confirmou. Captcha é UMA explicação possível — não a única. Sem essa
-    # separação, qualquer mudança de DOM ou portal fora do ar viraria "captcha".
-    tipo = _tipo_do_desafio(page)
+    Antes esperava-se só o perfil, por 8 s, e só depois se investigava captcha —
+    de modo que uma recusa explícita do portal levava a espera inteira para
+    virar "não confirmou".
+
+    Prioridade: perfil confirmado > erro do portal > captcha > prazo. Perfil
+    ganha de mensagem residual: quem decide a representação é a pós-condição.
+
+    `captcha_presente` é a inspeção BARATA; a classificação do tipo custa mais e
+    acontece uma única vez, depois, quando o desfecho for CAPTCHA.
+    """
+    fim = time.monotonic() + limite_s
+    while True:
+        if _perfil_representado(page, cnpj_alvo):
+            return DESFECHO_CONFIRMADA
+        if _erro_representacao_visivel(page):
+            return DESFECHO_ERRO_PORTAL
+        if _ha_captcha(page):
+            return DESFECHO_CAPTCHA
+        if time.monotonic() >= fim:
+            return DESFECHO_INDETERMINADO
+        time.sleep(INTERVALO_POS_CONDICAO_S)
+
+
+def _ha_captcha(page) -> bool:
+    """Inspeção barata de presença. Indeterminação = não há."""
+    try:
+        return bool(captcha_presente(page))
+    except Exception:  # noqa: BLE001 — sem prova, segue o fluxo normal
+        return False
+
+
+def _esperar_cooldown(page, cnpj_alvo: str,
+                      espera_s: float = COOLDOWN_ERRO_REPRESENTACAO_S) -> bool:
+    """Respeita o intervalo que o próprio portal pediu antes de tentar de novo.
+
+    Não é técnica de evasão nem tem jitter: é o throttle observado, cumprido de
+    forma determinística. Durante a espera o perfil continua sendo verificado —
+    se ele confirmar, não há mais nada a tentar.
+
+    Devolve True quando o perfil confirmou durante a espera.
+    """
+    print(f"[cnpj] Portal pediu intervalo — aguardando {espera_s:.0f}s "
+          "antes de nova tentativa.")
+    fim = time.monotonic() + espera_s
+    while time.monotonic() < fim:
+        if _perfil_representado(page, cnpj_alvo):
+            return True
+        time.sleep(INTERVALO_POS_CONDICAO_S)
+    return _perfil_representado(page, cnpj_alvo)
+
+
+def _restaurar_formulario(page) -> None:
+    """Fecha o que estiver aberto. Nada do estado anterior é reaproveitado."""
+    try:
+        page.keyboard.press("Escape")
+    except Exception:  # noqa: BLE001, S110 — o formulário será reaberto do zero
+        pass
+
+
+def _resolver_desafio_da_representacao(page, cnpj: str, *, on_manual_challenge,
+                                       fim_intervencao: float):
+    """Trata o captcha da representação. Devolve True ou um DESFECHO_*.
+
+    True significa perfil confirmado. Qualquer outro retorno é o desfecho
+    observado depois da tentativa, para quem chamou decidir entre nova
+    tentativa e falha.
+    """
+    tipo = _tipo_do_desafio(page)          # classificação UMA vez, aqui
     if tipo == TIPO_NENHUM:
-        raise RepresentacaoNaoConfirmada(
-            "o portal nao confirmou a representacao do perfil.")
+        return _aguardar_desfecho(page, cnpj)
 
-    # ── Tentativa AUTOMÁTICA — SÓ para os tipos da allowlist ─────────────────
-    #
-    # O veredito do solver é registrado mas NÃO decide nada: quem decide é a
-    # pós-condição do perfil. `True` do solver também significa "não havia
-    # captcha", e resolver o desafio não é o mesmo que o portal ter trocado o
-    # perfil.
     if tipo in TIPOS_AUTOMATICOS_REPRESENTACAO:
         print(f"[cnpj] Desafio automatizável detectado | tipo={tipo}")
         try:
-            automatico = solve_hcaptcha(page)
+            # Orçamento CURTO, só aqui: a representação tem o ritmo do portal, e
+            # uma resolução que se estende por um minuto chega tarde demais para
+            # servir. Os demais consumidores mantêm o padrão do resolvedor.
+            automatico = solve_hcaptcha(
+                page,
+                gemini_timeout_ms=TIMEOUT_GEMINI_REPRESENTACAO_MS,
+                deadline_s=DEADLINE_CAPTCHA_REPRESENTACAO_S)
         # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
         # formas — chave ausente, dependência indisponível, página morta — e
         # todas significam o mesmo aqui: erro técnico, não trabalho para humano.
@@ -700,16 +782,16 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
         print(f"[cnpj] Resolução automática: "
               f"{'concluída' if automatico else 'não concluída'}.")
 
-        print("[cnpj] Aguardando confirmação da representação...")
-        if _aguardar_perfil_representado(page, cnpj):
-            print("[cnpj] Perfil representado confirmado.")
+        desfecho = _aguardar_desfecho(page, cnpj)
+        if desfecho == DESFECHO_CONFIRMADA:
             return True
-
+        if desfecho == DESFECHO_ERRO_PORTAL:
+            # O caso da run: captcha resolvido e o portal recusando assim mesmo.
+            return DESFECHO_ERRO_PORTAL
         # O desafio pode ter sumido sem que o perfil trocasse — aí não há o que
         # um humano resolva, e chamar a janela só adiaria o diagnóstico.
         if _tipo_do_desafio(page) == TIPO_NENHUM:
-            raise RepresentacaoNaoConfirmada(
-                "o portal nao confirmou a representacao do perfil.")
+            return DESFECHO_INDETERMINADO
     else:
         print(f"[cnpj] Desafio requer validação manual | tipo={tipo}")
 
@@ -718,9 +800,8 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
         raise RepresentacaoRequerIntervencao(
             "a representacao exige validacao manual e nao ha como solicita-la.")
 
-    fim = time.monotonic() + prazo_intervencao_s
     while True:
-        restantes = fim - time.monotonic()
+        restantes = fim_intervencao - time.monotonic()
         if restantes <= 0:
             raise RepresentacaoExpirada(
                 "a validacao manual nao foi concluida no prazo.")
@@ -734,9 +815,93 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
 
         # CONTINUAR NÃO É CONFIRMAÇÃO. Quem confirma é o portal.
         print("[cnpj] Aguardando confirmação da representação...")
-        if _aguardar_perfil_representado(page, cnpj):
+        desfecho = _aguardar_desfecho(page, cnpj)
+        if desfecho == DESFECHO_CONFIRMADA:
+            return True
+        if desfecho == DESFECHO_ERRO_PORTAL:
+            return DESFECHO_ERRO_PORTAL
+
+
+def _representar_cnpj_procurador(page, cnpj: str, *,
+                                 on_manual_challenge=None,
+                                 prazo_intervencao_s: float = 300.0) -> bool:
+    """Representa o CNPJ como Procurador e CONFIRMA que o perfil trocou.
+
+    UMA tentativa é a OPERAÇÃO inteira: abrir o formulário, preencher, escolher
+    Procurador, enviar, observar o desfecho, resolver captcha se houver, e
+    observar de novo. Antes havia três tentativas do FORMULÁRIO e nenhuma da
+    representação — uma recusa do portal depois do clique não gerava tentativa
+    nova, virava `RepresentacaoNaoConfirmada`.
+
+    `.mensagemErro` visível é recusa TEMPORÁRIA: nova tentativa completa, depois
+    do intervalo que o portal pediu. Nada do estado anterior é reaproveitado —
+    o formulário é reaberto e todos os controles relocalizados.
+
+    `on_manual_challenge` é opcional e BLOQUEANTE: chamado apenas quando há
+    captcha na representação **e a resolução automática não bastou**, deve
+    devolver `CONTINUAR`, `CANCELAR` ou `EXPIRADO`. Recebe `segundos_restantes`
+    do prazo TOTAL. A biblioteca não conhece a interface que o implementa.
+
+    `prazo_intervencao_s` é um deadline MONOTÔNICO total: reabrir a intervenção
+    não reinicia a contagem, senão uma sequência de tentativas esticaria a
+    espera indefinidamente.
+
+    Devolve True só com a pós-condição confirmada. Nunca devolve True por
+    clique realizado. Levanta uma das exceções tipadas acima quando não confirma.
+    """
+    cnpj = _normalizar_cnpj(cnpj)
+    print("[cnpj] Iniciando representação do perfil PJ como Procurador...")
+    fim_intervencao = time.monotonic() + prazo_intervencao_s
+
+    for tentativa in range(1, MAX_TENTATIVAS_REPRESENTACAO + 1):
+        if tentativa > 1:
+            print(f"[cnpj] Tentativa {tentativa}/{MAX_TENTATIVAS_REPRESENTACAO} "
+                  "da representação.")
+        try:
+            _preencher_formulario_representacao(page, cnpj)
+        except Exception as e:
+            print(f"[cnpj] Erro ao enviar o formulário: {type(e).__name__}")
+            if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
+                raise RepresentacaoNaoConfirmada(
+                    "nao foi possivel enviar o formulario de representacao.") from None
+            _restaurar_formulario(page)
+            time.sleep(1)
+            continue
+
+        print("[cnpj] Aguardando confirmação da representação...")
+        desfecho = _aguardar_desfecho(page, cnpj)
+
+        if desfecho == DESFECHO_CAPTCHA:
+            resultado = _resolver_desafio_da_representacao(
+                page, cnpj, on_manual_challenge=on_manual_challenge,
+                fim_intervencao=fim_intervencao)
+            if resultado is True:
+                print("[cnpj] Perfil representado confirmado.")
+                return True
+            desfecho = resultado
+
+        if desfecho == DESFECHO_CONFIRMADA:
             print("[cnpj] Perfil representado confirmado.")
             return True
+
+        if desfecho == DESFECHO_ERRO_PORTAL:
+            print("[cnpj] O portal recusou a tentativa de representação.")
+            if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
+                raise RepresentacaoRejeitadaPeloPortal(
+                    "o portal recusou a representacao em todas as tentativas.")
+            if _esperar_cooldown(page, cnpj):
+                print("[cnpj] Perfil representado confirmado.")
+                return True
+            _restaurar_formulario(page)
+            continue
+
+        # Sem perfil, sem erro do portal e sem captcha: não há o que tentar de
+        # novo — o desfecho de sempre.
+        raise RepresentacaoNaoConfirmada(
+            "o portal nao confirmou a representacao do perfil.")
+
+    raise RepresentacaoNaoConfirmada(
+        "o portal nao confirmou a representacao do perfil.")
 
 
 # ---------------------------------------------------------------------------
