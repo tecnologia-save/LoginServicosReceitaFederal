@@ -72,8 +72,22 @@ class _Locator:
     def first(self):
         return self
 
+    def nth(self, _i):
+        return self
+
     def count(self):
         return 1 if self._existe else 0
+
+    def is_visible(self, **_k):
+        """Existir e estar visivel coincidem neste duble.
+
+        O ResolvedorCaptcha 1.0.7 passou a exigir VISIBILIDADE do widget "Sou
+        humano" — `count() > 0` deixou de ser prova de captcha aguardando
+        interacao, porque o hCaptcha deixa iframes para tras. Aqui o widget so
+        e montado quando ha captcha, entao presente e visivel sao a mesma
+        coisa; o duble que separa os dois casos vive no ResolvedorCaptcha.
+        """
+        return self._existe
 
     def inner_text(self):
         if not self._existe:
