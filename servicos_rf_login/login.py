@@ -537,9 +537,11 @@ DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
 # observado em produção.
 ESPERA_DESFECHO_REPRESENTACAO_S = 20.0
 
-# Quantas vezes o captcha de UMA tentativa é tratado antes de se desistir dela.
+# Quantas vezes o captcha de UMA tentativa é tratado antes de se desistir.
 # Existe porque a classificação pode não se sustentar (widget que não abre): sem
-# teto, "há captcha" e "tipo nenhum" se alternariam para sempre.
+# teto, "há captcha" e "tipo nenhum" se alternariam para sempre. Esgotado o
+# teto com captcha ainda ativo, o desfecho é falha TÉCNICA — nunca uma nova
+# submissão por cima do captcha da tentativa em curso.
 MAX_TRATAMENTOS_CAPTCHA = 2
 
 # Desfechos possíveis do clique em Representar. Vocabulário FECHADO.
@@ -990,21 +992,16 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
 
             if desfecho == DESFECHO_CAPTCHA:
                 if tratamentos >= MAX_TRATAMENTOS_CAPTCHA:
-                    # O desafio não se resolve nem se classifica. Insistir seria
-                    # o laço que esta versão existe para não ter: o captcha
-                    # continua na tela, e reobservá-lo devolveria CAPTCHA para
-                    # sempre. A tentativa acaba aqui — cumprindo o intervalo,
-                    # e ainda atento aos dois desfechos que encerram tudo.
-                    print("[cnpj] Captcha continua presente após "
-                          f"{tratamentos} tratamento(s) — encerrando a tentativa.")
-                    if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
-                        break
-                    proximo = _observar_intervalo(page, cnpj, enviado_em,
-                                                  erro_ja_visto=recusou)
-                    if proximo in (DESFECHO_CONFIRMADA, DESFECHO_PERFIL_OUTRO):
-                        desfecho = proximo
-                        continue
-                    break
+                    # Evidência EXPLÍCITA: há captcha ativo e o fluxo não
+                    # conseguiu avançá-lo. Isso não é "sem resposta", e não
+                    # autoriza clicar Representar de novo — enviar por cima de
+                    # um captcha que pertence a esta tentativa seria submeter
+                    # às cegas. Nem cabe esperar o intervalo: ele existe ANTES
+                    # de uma nova submissão, e não haverá nenhuma.
+                    print(f"[cnpj] Captcha continua ativo após {tratamentos} "
+                          "tratamento(s) — encerrando por falha técnica.")
+                    raise FalhaDoResolvedorCaptcha(
+                        "o captcha da representacao nao pode ser tratado.")
                 tratamentos += 1
                 resultado = _resolver_desafio_da_representacao(
                     page, cnpj, on_manual_challenge=on_manual_challenge,

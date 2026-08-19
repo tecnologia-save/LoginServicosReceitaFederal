@@ -556,7 +556,8 @@ def test_presenca_de_captcha_que_nao_se_confirma_deixa_de_ser_muda(portal, capsy
     classificacao devolvendo `nenhum`, e nenhuma linha no log."""
     p = portal(Portal(["captcha_confirma"]))
     p.tipo = login.TIPO_NENHUM
-    with pytest.raises(login.RepresentacaoNaoConfirmada):
+    p.abre_desafio = False
+    with pytest.raises(login.FalhaDoResolvedorCaptcha):
         representar(p)
     assert "Presença de captcha não se confirmou na classificação." in \
         capsys.readouterr().out
@@ -677,16 +678,19 @@ def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal, monkeypatc
 
 
 def test_desafio_que_nao_abre_nao_fica_girando(portal, monkeypatch):
-    """Widget que nao vira desafio: o tipo continua indeterminado e o fluxo
-    segue o caminho de sem-resposta, sem laco infinito."""
+    """Widget que nao vira desafio: sem laco infinito e sem reenvio.
+
+    O captcha continua ativo, entao o desfecho e falha tecnica do tratamento.
+    """
     p = portal(Portal(["captcha_confirma"]))
     p.abre_desafio = False
     monkeypatch.setattr(login, "detectar_tipo_captcha",
                         lambda _pg: login.TIPO_NENHUM)
 
-    with pytest.raises(login.RepresentacaoNaoConfirmada):
+    with pytest.raises(login.FalhaDoResolvedorCaptcha):
         representar(p)
     assert p.solves == 0
+    assert p.envios == 1
 
 
 def test_falha_ao_abrir_o_desafio_e_erro_tecnico(portal, monkeypatch):
@@ -797,16 +801,81 @@ def test_captcha_descoberto_no_intervalo_e_tratado_sem_novo_envio(portal):
     assert p.solves == 2                       # o segundo tratamento aconteceu
 
 
-def test_captcha_que_nunca_se_resolve_nao_gira_para_sempre(portal, monkeypatch):
-    """Teto de tratamentos: sem ele, `ha captcha` e `tipo nenhum` se alternam."""
+def test_captcha_persistente_termina_em_falha_tecnica_sem_reenviar(portal, monkeypatch):
+    """CONTRATO CORRIGIDO.
+
+    A versao anterior esperava `envios == MAX_TENTATIVAS_REPRESENTACAO`: com o
+    captcha ainda ativo, o fluxo restaurava o formulario e clicava Representar
+    de novo. Isso e submeter as cegas por cima de um captcha que pertence a
+    tentativa em curso.
+
+    Evidencia explicita de captcha ativo que nao avancou e falha TECNICA do
+    tratamento: nem `sem resposta`, nem `nao confirmada` generica, nem retry.
+    """
     p = portal(Portal(["captcha_confirma"]))
     monkeypatch.setattr(login, "detectar_tipo_captcha",
                         lambda _pg: login.TIPO_NENHUM)
     p.abre_desafio = False
 
-    with pytest.raises(login.RepresentacaoNaoConfirmada):
+    with pytest.raises(login.FalhaDoResolvedorCaptcha):
         representar(p)
-    assert p.envios == login.MAX_TENTATIVAS_REPRESENTACAO
+    assert p.envios == 1                                    # ZERO reenvio
+    assert p.aberturas_de_desafio == login.MAX_TRATAMENTOS_CAPTCHA
+
+
+def test_nenhuma_restauracao_de_formulario_com_captcha_ativo(portal, monkeypatch):
+    """GATE: o teto nao pode abrir caminho para uma nova submissao."""
+    p = portal(Portal(["captcha_confirma"]))
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: login.TIPO_NENHUM)
+    p.abre_desafio = False
+
+    restauracoes = []
+    monkeypatch.setattr(login, "_restaurar_formulario",
+                        lambda _pg: restauracoes.append(1))
+
+    with pytest.raises(login.FalhaDoResolvedorCaptcha):
+        representar(p)
+    assert restauracoes == []
+    assert p.envios == 1
+
+
+def test_a_falha_do_captcha_persistente_nao_carrega_dado_externo(portal, monkeypatch, capsys):
+    """Mensagem constante: nem documento, nem texto do portal, nem HTML."""
+    p = portal(Portal(["captcha_confirma"]))
+    monkeypatch.setattr(login, "detectar_tipo_captcha",
+                        lambda _pg: login.TIPO_NENHUM)
+    p.abre_desafio = False
+
+    with pytest.raises(login.FalhaDoResolvedorCaptcha) as erro:
+        representar(p)
+    mensagem = str(erro.value)
+    assert CNPJ not in mensagem
+    assert "SEGREDO_TESTE" not in mensagem
+    saida = capsys.readouterr()
+    assert CNPJ not in saida.out and "SEGREDO_TESTE" not in saida.out
+
+
+def test_grade_que_nao_some_continua_indo_para_o_humano(portal, monkeypatch):
+    """NAO confundir com o teto: um desafio CLASSIFICADO que o automatico nao
+    resolveu e caso de validacao manual, como sempre foi.
+
+    O teto so vale quando o captcha nao consegue nem ser avancado.
+    """
+    p = portal(Portal(["captcha_confirma"]))
+    monkeypatch.setattr(login, "detectar_tipo_captcha", lambda _pg: login.TIPO_GRADE)
+
+    def resolver(**kw):
+        p.solves += 1
+        p.solves_kwargs.append(kw)
+        p.estado = "captcha"          # o desafio nunca sai da tela
+        return False
+
+    p.resolver = resolver
+    with pytest.raises(login.RepresentacaoRequerIntervencao):
+        representar(p)
+    assert p.solves == 1
+    assert p.envios == 1
 
 
 def test_perfil_confirmado_no_intervalo_depois_do_solver(portal):
