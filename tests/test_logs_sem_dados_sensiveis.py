@@ -93,9 +93,9 @@ def _nomes_contaminados(arvore) -> set:
                 if isinstance(alvo, ast.Name):
                     contaminados.add(alvo.id)
         elif (isinstance(no, ast.AnnAssign) and no.value
-              and _fonte_proibida_ou_saneada(no.value)):
-            if isinstance(no.target, ast.Name):
-                contaminados.add(no.target.id)
+              and _fonte_proibida_ou_saneada(no.value)
+              and isinstance(no.target, ast.Name)):
+            contaminados.add(no.target.id)
     return contaminados
 
 
