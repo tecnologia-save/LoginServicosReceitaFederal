@@ -504,7 +504,20 @@ PAPEL_ESPERADO = "procurador"
 #
 # Isto NÃO remove suporte a nada no ResolvedorCaptcha: `cartao_animal` e
 # `imagem` seguem resolvíveis por outros consumidores e pelo captcha do login.
-TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE, TIPO_GRADE_FUSED)
+# SOMENTE grade 3x3 normal — 9 tiles reais — é resolvida automaticamente aqui.
+#
+# `grade_fused` saiu depois de uma execução no QA em que ele foi classificado
+# CORRETAMENTE e mesmo assim seguiu para o solver, que passou a chamar o modelo
+# repetidamente. Não é caso de melhorar a heurística: o pedido é que qualquer
+# formato que não seja a grade normal vá para o humano.
+#
+# A tupla tem um elemento só de propósito. Formato novo, futuro ou
+# `desconhecido` cai fora dela por construção — nunca por esquecimento.
+#
+# Isto NÃO remove suporte a nada no ResolvedorCaptcha: `grade_fused`,
+# `cartao_animal` e `imagem` seguem resolvíveis por outros consumidores e pelo
+# captcha do login. A restrição é da representação no Serviços RF.
+TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE,)
 
 # Janela curta para o SPA refletir a troca antes de concluirmos que ela não
 # ocorreu. Curta de propósito: quando há captcha, esperar mais não muda nada.

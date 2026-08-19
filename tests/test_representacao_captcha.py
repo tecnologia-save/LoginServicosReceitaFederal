@@ -242,13 +242,25 @@ def test_o_captcha_do_login_nao_foi_alterado():
 #
 # Na run real o portal apresentou `cartao_animal` e o solver tentou: 3 rodadas,
 # 12 capturas de frame, chamadas ao modelo — para cair na intervencao humana do
-# mesmo jeito. So `grade` e `grade_fused` sao tentados aqui.
+# mesmo jeito.
+#
+# CONTRATO ESTREITADO depois da run de 09:58 no QA: `grade_fused` foi
+# classificado CORRETAMENTE e mesmo assim seguiu para o solver. So a grade 3x3
+# normal e automatica aqui.
 
-def test_allowlist_tem_exatamente_grade_e_grade_fused():
-    assert login.TIPOS_AUTOMATICOS_REPRESENTACAO == (TIPO_GRADE, TIPO_GRADE_FUSED)
+def test_allowlist_tem_exatamente_grade():
+    """UM elemento. Formato novo ou `desconhecido` fica de fora por construcao."""
+    assert login.TIPOS_AUTOMATICOS_REPRESENTACAO == (TIPO_GRADE,)
 
 
-@pytest.mark.parametrize("tipo", [TIPO_GRADE, TIPO_GRADE_FUSED])
+def test_nenhum_outro_tipo_entra_na_allowlist():
+    """Gate: a lista nao pode crescer sem que este teste caia."""
+    for tipo in (TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
+                 TIPO_DESCONHECIDO, login.TIPO_NENHUM):
+        assert tipo not in login.TIPOS_AUTOMATICOS_REPRESENTACAO, tipo
+
+
+@pytest.mark.parametrize("tipo", [TIPO_GRADE])
 def test_b_c_tipos_da_allowlist_sao_tentados(solver, tipo, capsys):
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha(tipo=tipo)
@@ -261,8 +273,8 @@ def test_b_c_tipos_da_allowlist_sao_tentados(solver, tipo, capsys):
     assert f"tipo={tipo}" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("tipo", [TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
-                                  TIPO_DESCONHECIDO])
+@pytest.mark.parametrize("tipo", [TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL,
+                                  TIPO_IMAGEM, TIPO_DESCONHECIDO])
 def test_d_e_f_tipos_fora_da_allowlist_vao_direto_ao_humano(solver, tipo, capsys):
     """ZERO chamada ao solver: nem captura de frames, nem Gemini."""
     pagina, portal = _pagina()
@@ -337,3 +349,68 @@ def test_o_solver_global_mantem_todos_os_tipos():
     assert TIPO_IMAGEM in resolvedor_captcha.TIPOS_CONHECIDOS
     assert hasattr(resolvedor_captcha.solver, "_solve_cartao_animal")
     assert hasattr(resolvedor_captcha.solver, "_solve_imagem")
+
+
+# ══ RED da run de 09:58 no QA ═══════════════════════════════════════════════
+#
+#   09:58:25 Desfecho observado | tipo=captcha
+#   09:58:25 Tipo: grade fused
+#   09:58:27 Desafio aberto | tipo=grade_fused
+#   09:58:27 Desafio automatizavel detectado | tipo=grade_fused
+#
+# Nao houve ambiguidade: o classificador acertou, e a allowlist e que mandou o
+# desafio para o solver. Depois disso o Gemini foi chamado varias vezes.
+
+def test_grade_fused_nao_chama_o_gemini(solver, capsys):
+    """RED 1: o caso EXATO da run. ZERO chamada ao solver, uma ao humano."""
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE_FUSED)
+    chamadas = []
+
+    def humano(*, segundos_restantes):
+        chamadas.append(segundos_restantes)
+        portal.representar(CNPJ_ALVO)
+        return login.CONTINUAR
+
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=humano) is True
+    assert solver["chamadas"] == 0
+    assert len(chamadas) == 1
+    saida = capsys.readouterr().out
+    assert f"requer validação manual | tipo={TIPO_GRADE_FUSED}" in saida
+    assert "Desafio automatizável detectado" not in saida
+
+
+def test_grade_fused_sem_janela_manual_e_fail_safe(solver):
+    """RED 2: em background nao ha humano — e ainda assim ZERO Gemini."""
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE_FUSED)
+
+    with pytest.raises(login.RepresentacaoRequerIntervencao):
+        login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
+                                           on_manual_challenge=None)
+    assert solver["chamadas"] == 0
+
+
+def test_a_grade_normal_continua_automatica(solver):
+    """O que a allowlist ainda autoriza — e so isso."""
+    pagina, portal = _pagina()
+    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE)
+    cb = _chamador([login.CONTINUAR])
+
+    assert login._representar_cnpj_procurador(
+        pagina, CNPJ_ALVO, on_manual_challenge=cb) is True
+    assert solver["chamadas"] == 1
+    assert cb.estado["chamadas"] == 0
+
+
+def test_o_resolvedor_continua_suportando_grade_fused():
+    """A restricao e DESTA integracao, nao do resolvedor.
+
+    Outros consumidores — e o captcha do proprio login — continuam podendo
+    resolver `grade_fused`, `cartao_animal` e `imagem`.
+    """
+    from resolvedor_captcha import solver as rc
+
+    assert rc.TIPO_GRADE_FUSED in rc.TIPOS_CONHECIDOS
+    assert rc.TIPO_CARTAO_ANIMAL in rc.TIPOS_CONHECIDOS
