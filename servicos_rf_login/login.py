@@ -579,20 +579,71 @@ DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
 #
 #     preparo 0,6-0,8 s   |   Gemini 5,4 s / 6,5 s / 9,6 s
 #
-# Os 9,6 s são o motivo do teto por chamada subir de 10 s para 14 s: a chamada
-# mais lenta das três passou a 400 ms do teto antigo. Num dia um pouco pior ela
-# morre por timeout e a rodada inteira se perde — não porque o modelo errou, mas
-# porque o teto foi fixado sem nunca ter sido medido com este prompt.
+# Os 9,6 s são o motivo do teto por chamada ser 14 s e não os 10 s da grade: a
+# chamada mais lenta das três passou a 400 ms do teto antigo. Num dia um pouco
+# pior ela morre por timeout e a rodada inteira se perde — não porque o modelo
+# errou, mas porque o teto nunca tinha sido medido com este prompt.
 #
-# 35 s cobrem o caminho ruim inteiro: captura 7 + preparo 1 + uma chamada que
-# estoura os 14 + uma segunda que responde em ~10. Ficam bem abaixo do "pouco
-# mais de um minuto" que fez o portal recusar a representação na run
-# documentada acima — que continua sendo o limite superior real, e não desce.
+# A UNIDADE DE CUSTO É A RODADA, E O DESAFIO TEM DUAS.
 #
-# Amostra de três. Se aparecer representação recusada DEPOIS de "Representação
-# enviada", este número passou do ponto e desce.
+# O hCaptcha faz duas rodadas por desafio, e a segunda traz animais e trajetória
+# NOVOS — ou seja, ela paga outra captura de 7 s inteira. O primeiro valor posto
+# aqui foi 35 s, dimensionado para UMA rodada mais uma retentativa de chamada.
+# Essa conta não descreve o problema, e a RUN-0ee6428b (dev, 04/09/2026) mostrou
+# como ela falha — cronometrada, não estimada:
+#
+#     19:50:27.441  === Iteração 1/6 ===
+#     19:50:33.067  Rodada 1/2 — capturando animação...      (+5,6 s)
+#     19:50:50.214  Clicado em 'galinha' célula=(3,13)       (+17,1 s)  ACERTOU
+#     19:50:52.424  Rodada 2/2 — capturando animação...      (+2,2 s)
+#     19:51:05.015  orçamento de tempo esgotado
+#     19:51:07.361  [cnpj] Validação manual necessária.      (total 37,6 s)
+#
+# A rodada 1 acertou com confidence=high. A rodada 2 entrou com ~7 s de
+# orçamento, `timeout_efetivo = min(14 s, restante)` virou 7 s, e duas das três
+# latências medidas não cabem nisso: o modelo nem chegou a responder. Visto da
+# tela, "acertou a primeira leva e fechou sozinho".
+#
+# Os 5,6 s de ABERTURA E CLASSIFICAÇÃO antes da rodada 1 são a parcela que a
+# conta original esquecia — o relógio do deadline começa na entrada do
+# `solve_hcaptcha`, não na primeira captura.
+#
+#     abertura 5,6 + 2 x (rodada de ~19,3 s)      = 44,3 s   observado
+#     idem, com o Gemini na pior latência medida  = 47,4 s
+#
+# 60 s cobrem esse pior caso com 12,6 s de folga — escolha do Jean, e ela chega
+# a 1,4 s de cobrir até o cenário seguinte: duas rodadas MAIS uma chamada que
+# estoura os 14 s (61,4 s). Na prática só esse último caso ainda termina em
+# intervenção humana.
+#
+# BARATEAR A CAPTURA foi considerado e descartado, não esquecido: o ciclo da
+# animação é ~9,9 s, então cortar a captura para ~5 s veria metade dele. A bola
+# PAUSA sobre cada animal; ver metade do ciclo é arriscar não ver onde ela
+# passou. Invalidaria a medida de 3/3 e provavelmente pioraria o acerto. Com o
+# limite do portal medido abaixo, não é necessário.
+#
+# LIMITE SUPERIOR — agora MEDIDO, e a anedota que estava aqui era errada.
+# Levantamento do histórico de dev, intervalo entre "Clicando em Representar" e
+# o primeiro desfecho:
+#
+#     confirmado           n=11   min 10,4 s   média 22,3 s   MÁX 70,3 s
+#     recusado pelo portal n= 5   min  5,0 s   média 47,6 s   máx 96,8 s
+#
+# Existe representação ACEITA 70,3 s depois do clique, então o "pouco mais de um
+# minuto" que este comentário citava subestimava o portal. E a recusa mais
+# rápida veio em 5,0 s: se demora fosse o gatilho, não haveria recusa em cinco
+# segundos — a recusa é sobre procuração/permissão, não sobre tempo. O caso
+# anedótico original juntou duas coisas independentes.
+#
+# Amostra pequena (11 e 5, tudo de dev) e o 70,3 s é caso único. 60 s ficam
+# 10,3 s abaixo dele — margem menor do que eu escolheria sozinho, e o sinal de
+# que passou do ponto é específico: representação recusada DEPOIS de
+# "Representação enviada", não falha durante a resolução do captcha.
+#
+# Vale SÓ para este tipo. `_orcamento_do_captcha` devolve isto apenas quando
+# `tipo == TIPO_BOLA`; a grade 3x3, que roda todo dia, segue nos 25 s / 10 s.
 TIMEOUT_GEMINI_BOLA_MS = 14_000
-DEADLINE_CAPTCHA_BOLA_S = 35.0
+DEADLINE_CAPTCHA_BOLA_S = 60.0
 
 
 def _orcamento_do_captcha(tipo: str) -> tuple[int, float]:

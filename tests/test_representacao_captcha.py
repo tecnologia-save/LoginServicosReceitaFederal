@@ -433,12 +433,45 @@ def test_bola_tem_orcamento_proprio_e_maior():
     assert d_bola > d_grade and t_bola > t_grade
 
 
-def test_orcamento_da_bola_cabe_a_latencia_medida():
-    """Captura 7s + preparo 1s + chamada que estoura + uma que responde."""
-    captura_s = 7.0   # BOLA_FRAMES * BOLA_INTERVALO_S, no ResolvedorCaptcha
-    preparo_s = 1.0
-    pior_caso = captura_s + preparo_s + (login.TIMEOUT_GEMINI_BOLA_MS / 1000) + 10.0
-    assert pior_caso <= login.DEADLINE_CAPTCHA_BOLA_S
+# A UNIDADE DE CUSTO E A RODADA, E O DESAFIO TEM DUAS.
+#
+# A versao anterior deste teste somava UMA captura e passava verde com o
+# orcamento furado — ele codificava o modelo errado do problema e por isso deu
+# falsa confianca em vez de pegar o defeito. O hCaptcha faz duas rodadas por
+# desafio, e a segunda traz animais e trajetoria novos: paga outra captura
+# inteira. Estes dois testes existem para que encurtar o teto volte a doer.
+
+CAPTURA_S = 7.0    # BOLA_FRAMES (14) * BOLA_INTERVALO_S (0,5), no ResolvedorCaptcha
+PREPARO_S = 0.8    # medido: 0,6-0,8s
+ESPERA_S = 3.0     # _wait_for_resolve depois do submit
+GEMINI_BOM_S = 6.5   # mediana das 3 amostras medidas em 04/09/2026
+GEMINI_RUIM_S = 9.6  # pior das 3
+RODADAS = 2          # o hCaptcha faz duas por desafio
+
+
+def _custo_de_rodada(gemini_s):
+    return CAPTURA_S + PREPARO_S + gemini_s + ESPERA_S
+
+
+def test_orcamento_da_bola_cabe_DUAS_rodadas_no_caso_bom():
+    """35s cabiam por 0,4s — teto sem folga, e a segunda rodada morria."""
+    assert RODADAS * _custo_de_rodada(GEMINI_BOM_S) <= login.DEADLINE_CAPTCHA_BOLA_S
+
+
+def test_orcamento_da_bola_cabe_DUAS_rodadas_no_caso_RUIM():
+    """A folga tem de sobreviver a duas chamadas na pior latencia medida."""
+    assert RODADAS * _custo_de_rodada(GEMINI_RUIM_S) <= login.DEADLINE_CAPTCHA_BOLA_S
+
+
+def test_segunda_rodada_ainda_recebe_orcamento_util():
+    """O que sobra para a rodada 2 tem de caber a pior latencia medida.
+
+    `timeout_efetivo = min(TIMEOUT_GEMINI_BOLA_MS, restante)`. Com 35s a rodada 2
+    entrava com ~7s e duas das tres latencias medidas nao cabiam nisso.
+    """
+    gasto_na_rodada_1 = _custo_de_rodada(GEMINI_RUIM_S)
+    sobra = login.DEADLINE_CAPTCHA_BOLA_S - gasto_na_rodada_1 - CAPTURA_S - PREPARO_S
+    assert sobra >= GEMINI_RUIM_S
 
 
 def test_teto_da_bola_acomoda_a_chamada_mais_lenta_medida():
@@ -446,10 +479,18 @@ def test_teto_da_bola_acomoda_a_chamada_mais_lenta_medida():
     assert login.TIMEOUT_GEMINI_BOLA_MS >= 12_000
 
 
-def test_nenhum_orcamento_passa_do_limite_do_portal():
-    """Acima de ~1min o portal recusou a representacao numa run real."""
-    assert login.DEADLINE_CAPTCHA_BOLA_S < 60.0
-    assert login.DEADLINE_CAPTCHA_REPRESENTACAO_S < 60.0
+# O limite do portal era ANEDOTA ("~1min, uma run"), e o levantamento do
+# historico de dev a derrubou: existe representacao CONFIRMADA 70,3s depois do
+# clique em Representar, e a recusa mais RAPIDA veio em 5,0s. Se demora fosse o
+# gatilho da recusa, nao haveria recusa em cinco segundos.
+MAIOR_REPRESENTACAO_CONFIRMADA_S = 70.3
+
+
+def test_nenhum_orcamento_passa_do_limite_medido_do_portal():
+    """Abaixo do maior sucesso observado, com folga — nao encostado nele."""
+    for teto in (login.DEADLINE_CAPTCHA_BOLA_S,
+                 login.DEADLINE_CAPTCHA_REPRESENTACAO_S):
+        assert MAIOR_REPRESENTACAO_CONFIRMADA_S - teto >= 10.0, teto
 
 
 def test_tipo_fora_da_allowlist_usa_o_orcamento_padrao():
@@ -459,3 +500,9 @@ def test_tipo_fora_da_allowlist_usa_o_orcamento_padrao():
         assert login._orcamento_do_captcha(tipo) == (
             login.TIMEOUT_GEMINI_REPRESENTACAO_MS,
             login.DEADLINE_CAPTCHA_REPRESENTACAO_S), tipo
+
+
+def test_orcamento_maior_vale_SO_para_a_bola():
+    """A grade 3x3 roda todo dia e nao herda nada da folga da animacao."""
+    assert login._orcamento_do_captcha(TIPO_GRADE) == (10_000, 25.0)
+    assert login.DEADLINE_CAPTCHA_REPRESENTACAO_S == 25.0
