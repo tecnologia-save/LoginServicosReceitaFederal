@@ -86,13 +86,24 @@ class Portal:
     "erro", "confirma", "captcha_erro", "captcha_confirma", "nada".
     """
 
+    # Tipos que o resolvedor REALMENTE conclui. Desde 04/09/2026 a representacao
+    # TENTA todo desafio, entao "ser tentado" deixou de significar "ser
+    # resolvido" — e um duble que resolve tudo apagaria o caminho humano da
+    # suite inteira. `resolve_automatico=False` e como um teste diz "tentou e
+    # nao deu", que e o caminho novo para a pessoa.
+    RESOLVIVEIS = (login.TIPO_GRADE, login.TIPO_GRADE_FUSED, login.TIPO_BOLA)
+
     def __init__(self, roteiro, *, documento=CNPJ, papel="Procurador",
-                 texto_erro=TEXTO_SENSIVEL, tipo=login.TIPO_GRADE):
+                 texto_erro=TEXTO_SENSIVEL, tipo=login.TIPO_GRADE,
+                 resolve_automatico=None):
         self.roteiro = list(roteiro)
         self.documento = documento
         self.papel = papel
         self.mensagens = [(texto_erro, True)]
         self.tipo = tipo
+        self.resolve_automatico = (
+            tipo in self.RESOLVIVEIS
+            if resolve_automatico is None else resolve_automatico)
 
         self.estado = "inicial"
         self.envios = 0
@@ -139,6 +150,8 @@ class Portal:
     def resolver(self, **kwargs):
         self.solves += 1
         self.solves_kwargs.append(kwargs)
+        if not self.resolve_automatico:
+            return False          # tentou; o captcha continua na tela
         self.estado = self._apos_captcha or "inicial"
         return True
 
@@ -285,8 +298,8 @@ def test_a_representacao_usa_orcamento_curto_no_solver(portal):
     }]
 
 
-def test_captcha_fora_da_allowlist_vai_para_o_humano(portal):
-    """RED 8: `cartao_animal` continua sendo caso de intervencao."""
+def test_captcha_nao_resolvido_vai_ao_humano_apos_tentar(portal):
+    """`cartao_animal` continua indo para a pessoa — mas depois de tentar."""
     p = portal(Portal(["captcha_confirma"], tipo="cartao_animal"))
     chamadas = []
 
@@ -296,7 +309,7 @@ def test_captcha_fora_da_allowlist_vai_para_o_humano(portal):
         return login.CONTINUAR
 
     assert representar(p, on_manual_challenge=manual) is True
-    assert p.solves == 0                 # nao tentou resolver automaticamente
+    assert p.solves == 1                 # tentou; o humano so entra depois
     assert len(chamadas) == 1
 
 
@@ -658,8 +671,13 @@ def test_checkbox_fechado_abre_o_desafio_antes_de_classificar(portal, monkeypatc
 
 
 def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal, monkeypatch):
-    """A allowlist decide DEPOIS de abrir — abrir nao autoriza resolver."""
-    p = portal(Portal(["captcha_confirma"]))
+    """Abrir o desafio nao e resolve-lo: o tipo so se conhece DEPOIS de abrir.
+
+    O tipo real vem do monkeypatch abaixo, nao do `tipo=` do Portal, entao
+    `resolve_automatico` precisa ser dito na mao — senao o duble herdaria o
+    padrao da grade e resolveria um `cartao_animal`.
+    """
+    p = portal(Portal(["captcha_confirma"], resolve_automatico=False))
     tipos = iter([login.TIPO_NENHUM, "cartao_animal"])
     monkeypatch.setattr(login, "detectar_tipo_captcha",
                         lambda _pg: next(tipos, "cartao_animal"))
@@ -673,7 +691,7 @@ def test_checkbox_que_abre_em_cartao_animal_vai_para_o_humano(portal, monkeypatc
 
     assert representar(p, on_manual_challenge=manual) is True
     assert p.aberturas_de_desafio == 1
-    assert p.solves == 0                 # ZERO Gemini automatico
+    assert p.solves == 1                 # tentou antes de chamar a pessoa
     assert len(chamadas) == 1
 
 

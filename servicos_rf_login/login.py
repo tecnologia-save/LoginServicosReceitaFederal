@@ -40,8 +40,11 @@ load_dotenv()
 from patchright.sync_api import sync_playwright
 from resolvedor_captcha import (
     TIPO_BOLA,
+    TIPO_CARTAO_ANIMAL,
+    TIPO_DESCONHECIDO,
     TIPO_GRADE,
     TIPO_GRADE_FUSED,
+    TIPO_IMAGEM,
     TIPO_NENHUM,
     abrir_desafio,
     captcha_presente,
@@ -538,9 +541,38 @@ PAPEL_ESPERADO = "procurador"
 #     checava. Isso foi corrigido no ResolvedorCaptcha; `_solve_bola` para na
 #     rodada em que o orçamento acaba, e se RECUSA a rodar sem deadline.
 #
-# `grade_fused` continua FORA: o motivo dele era o laço, mas nada mede que ele
-# resolva, e não é este trabalho que traz essa medida.
-TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE, TIPO_BOLA)
+# DEIXOU DE SER ALLOWLIST EM 04/09/2026: agora TENTA TODO desafio.
+#
+# Decisão do Jean, depois da RUN-4ef0d17d, e ele já tinha pedido `grade_fused`
+# de volta antes — foi julgamento meu mantê-lo fora, e estava errado. O que a
+# run mostrou:
+#
+#     20:07:54.038  [cnpj] Clicando em Representar...
+#     20:08:00.115  [captcha] Tipo: grade fused (0 tiles, 520x402px ratio=1.29)
+#     20:08:00.115  [cnpj] Desafio requer validação manual | tipo=grade_fused
+#
+# Seis segundos entre pedir a representação e desistir, com ZERO chamada ao
+# modelo. A empresa foi para pendência humana sem que nada fosse tentado.
+#
+# O raciocínio original da allowlist — "formato novo cai no caminho humano por
+# construção, nunca por esquecimento" — protegia contra um custo que não existe
+# mais. Ele nasceu de uma run em que `grade_fused` "passou a chamar o modelo
+# repetidamente", e isso era um laço sem teto: as rodadas internas dos
+# resolvedores não checavam o orçamento, só a cadeia de modelos checava. Com o
+# teto por rodada corrigido no ResolvedorCaptcha e o orçamento POR TIPO abaixo,
+# uma tentativa que não dá certo custa segundos limitados e termina no mesmo
+# lugar em que teria terminado sem tentar: no humano.
+#
+# Ou seja: o que a allowlist comprava era evitar gasto; o que ela custava era
+# desistir sem tentar. Depois do conserto do laço, o preço ficou maior que o
+# benefício.
+#
+# `TIPO_NENHUM` fica fora porque não há desafio para resolver — não é política,
+# é ausência de objeto. A intervenção humana continua existindo, e é para onde
+# vai quem o resolvedor TENTOU e não conseguiu.
+TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE, TIPO_GRADE_FUSED, TIPO_BOLA,
+                                   TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
+                                   TIPO_DESCONHECIDO)
 
 # Janela curta para o SPA refletir a troca antes de concluirmos que ela não
 # ocorreu. Curta de propósito: quando há captcha, esperar mais não muda nada.

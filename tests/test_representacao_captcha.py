@@ -249,16 +249,16 @@ def test_o_captcha_do_login_nao_foi_alterado():
 # classificado CORRETAMENTE e mesmo assim seguiu para o solver. So a grade 3x3
 # normal e automatica aqui.
 
-def test_allowlist_e_grade_e_bola():
-    """Cada entrada e posta A MAO. Formato novo fica de fora por construcao."""
-    assert login.TIPOS_AUTOMATICOS_REPRESENTACAO == (TIPO_GRADE, TIPO_BOLA)
+def test_todo_desafio_e_tentado():
+    """Nenhum tipo vai ao humano sem tentativa. Ver o comentario em login.py."""
+    for tipo in (TIPO_GRADE, TIPO_GRADE_FUSED, TIPO_BOLA,
+                 TIPO_CARTAO_ANIMAL, TIPO_IMAGEM, TIPO_DESCONHECIDO):
+        assert tipo in login.TIPOS_AUTOMATICOS_REPRESENTACAO, tipo
 
 
-def test_nenhum_outro_tipo_entra_na_allowlist():
-    """Gate: a lista nao pode crescer sem que este teste caia."""
-    for tipo in (TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
-                 TIPO_DESCONHECIDO, login.TIPO_NENHUM):
-        assert tipo not in login.TIPOS_AUTOMATICOS_REPRESENTACAO, tipo
+def test_so_tipo_nenhum_fica_de_fora():
+    """Unica excecao, e nao e politica: sem desafio nao ha o que resolver."""
+    assert login.TIPO_NENHUM not in login.TIPOS_AUTOMATICOS_REPRESENTACAO
 
 
 @pytest.mark.parametrize("tipo", [TIPO_GRADE, TIPO_BOLA])
@@ -274,10 +274,10 @@ def test_b_c_tipos_da_allowlist_sao_tentados(solver, tipo, capsys):
     assert f"tipo={tipo}" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("tipo", [TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL,
-                                  TIPO_IMAGEM, TIPO_DESCONHECIDO])
-def test_d_e_f_tipos_fora_da_allowlist_vao_direto_ao_humano(solver, tipo, capsys):
-    """ZERO chamada ao solver: nem captura de frames, nem Gemini."""
+@pytest.mark.parametrize("tipo", [TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
+                                  TIPO_DESCONHECIDO])
+def test_d_e_f_tipos_nao_resolvidos_vao_ao_humano_APOS_tentar(solver, tipo, capsys):
+    """O humano continua existindo — mas so depois de uma tentativa real."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha(tipo=tipo)
 
@@ -287,8 +287,8 @@ def test_d_e_f_tipos_fora_da_allowlist_vao_direto_ao_humano(solver, tipo, capsys
 
     assert login._representar_cnpj_procurador(
         pagina, CNPJ_ALVO, on_manual_challenge=humano) is True
-    assert solver["chamadas"] == 0
-    assert f"requer validação manual | tipo={tipo}" in capsys.readouterr().out
+    assert solver["chamadas"] == 1          # TENTOU antes de desistir
+    assert "Resolução automática: não concluída" in capsys.readouterr().out
 
 
 def test_d_cartao_animal_reproduz_a_run_real(solver):
@@ -304,7 +304,7 @@ def test_d_cartao_animal_reproduz_a_run_real(solver):
 
     assert login._representar_cnpj_procurador(
         pagina, CNPJ_ALVO, on_manual_challenge=humano) is True
-    assert solver["chamadas"] == 0          # nada de 12 frames
+    assert solver["chamadas"] == 1          # tenta uma vez, com teto de tempo
     assert len(chamadas) == 1               # humano chamado IMEDIATAMENTE
 
 
@@ -322,7 +322,7 @@ def test_i_background_com_cartao_animal_pede_intervencao(solver):
     with pytest.raises(login.RepresentacaoRequerIntervencao):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
                                            on_manual_challenge=None)
-    assert solver["chamadas"] == 0          # nem tentou, e nem devia
+    assert solver["chamadas"] == 1          # agora tenta — e cai ao humano se falhar
 
 
 def test_n_continuar_cedo_demais_mantem_o_mesmo_deadline(solver):
@@ -340,7 +340,7 @@ def test_n_continuar_cedo_demais_mantem_o_mesmo_deadline(solver):
         pagina, CNPJ_ALVO, on_manual_challenge=humano,
         prazo_intervencao_s=300.0) is True
     assert restantes == sorted(restantes, reverse=True)   # deadline nao reinicia
-    assert solver["chamadas"] == 0
+    assert solver["chamadas"] == 1     # tentou; o deadline do humano nao reinicia
 
 
 def test_o_solver_global_mantem_todos_os_tipos():
@@ -362,7 +362,7 @@ def test_o_solver_global_mantem_todos_os_tipos():
 # Nao houve ambiguidade: o classificador acertou, e a allowlist e que mandou o
 # desafio para o solver. Depois disso o Gemini foi chamado varias vezes.
 
-def test_grade_fused_nao_chama_o_gemini(solver, capsys):
+def test_grade_fused_agora_e_tentado(solver, capsys):
     """RED 1: o caso EXATO da run. ZERO chamada ao solver, uma ao humano."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE_FUSED)
@@ -375,26 +375,32 @@ def test_grade_fused_nao_chama_o_gemini(solver, capsys):
 
     assert login._representar_cnpj_procurador(
         pagina, CNPJ_ALVO, on_manual_challenge=humano) is True
-    assert solver["chamadas"] == 0
-    assert len(chamadas) == 1
+    assert solver["chamadas"] == 1          # TENTA — era o caso da RUN-4ef0d17d
+    assert len(chamadas) == 0               # e resolveu, sem incomodar ninguem
     saida = capsys.readouterr().out
-    assert f"requer validação manual | tipo={TIPO_GRADE_FUSED}" in saida
-    assert "Desafio automatizável detectado" not in saida
+    assert f"Desafio automatizável detectado | tipo={TIPO_GRADE_FUSED}" in saida
 
 
 def test_grade_fused_sem_janela_manual_e_fail_safe(solver):
-    """RED 2: em background nao ha humano — e ainda assim ZERO Gemini."""
+    """Em background nao ha humano: se o solver NAO conclui, desfecho tipado.
+
+    Antes este teste exigia ZERO chamada ao modelo. Agora ele exige o
+    contrario — que o solver TENHA sido chamado — e continua defendendo o
+    que importa de verdade: sem janela manual, nada fica esperando por
+    ninguem, o desfecho e uma excecao tipada.
+    """
     pagina, portal = _pagina()
-    portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE_FUSED)
+    portal.ao_representar = lambda p: p.exigir_captcha(
+        tipo=TIPO_GRADE_FUSED, automatizavel=False)
 
     with pytest.raises(login.RepresentacaoRequerIntervencao):
         login._representar_cnpj_procurador(pagina, CNPJ_ALVO,
                                            on_manual_challenge=None)
-    assert solver["chamadas"] == 0
+    assert solver["chamadas"] == 1
 
 
 def test_a_grade_normal_continua_automatica(solver):
-    """O que a allowlist ainda autoriza — e so isso."""
+    """O formato que roda todo dia segue resolvido sem humano."""
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha(tipo=TIPO_GRADE)
     cb = _chamador([login.CONTINUAR])

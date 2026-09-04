@@ -136,7 +136,7 @@ def test_2_captcha_resolvido_apos_continuar_confirma(capsys, solver):
     assert login._representar_cnpj_procurador(
         pagina, CNPJ_ALVO, on_manual_challenge=resolve) is True
     saida = capsys.readouterr().out
-    assert "Validação manual necessária" in saida
+    assert "Resolução automática: não concluída" in saida
     assert "Perfil representado confirmado" in saida
 
 

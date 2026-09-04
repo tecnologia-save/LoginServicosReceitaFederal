@@ -11,7 +11,13 @@ duble reproduz apenas a ESTRUTURA relevante, com documentos sinteticos:
 E essa a diferenca que a pos-condicao verifica. Avatar visivel existe nos tres
 estados — e por isso nunca serviu de prova.
 """
-from resolvedor_captcha import TIPO_CARTAO_ANIMAL, solver
+from resolvedor_captcha import (
+    TIPO_BOLA,
+    TIPO_CARTAO_ANIMAL,
+    TIPO_GRADE,
+    TIPO_GRADE_FUSED,
+    solver,
+)
 
 from servicos_rf_login import login
 
@@ -48,19 +54,30 @@ class Portal:
         self.captcha = False
         self.captcha_tipo = login.TIPO_NENHUM
 
+    # Tipos que o resolvedor REALMENTE conclui, com medida por tras: `grade` e
+    # `grade_fused` rodam em producao, e `bola_em_movimento` fez 3/3 nas
+    # amostras arquivadas. Os demais o solver TENTA e nao conclui.
+    RESOLVIVEIS = (TIPO_GRADE, TIPO_GRADE_FUSED, TIPO_BOLA)
+
     def exigir_captcha(self, tipo=TIPO_CARTAO_ANIMAL, automatizavel=None):
         """O portal exibiu um desafio de `tipo`.
 
-        O TIPO decide a politica: so `grade` e `grade_fused` podem ser tentados
-        automaticamente na representacao. `automatizavel` diz se o duble do
-        solver consegue resolve-lo — por padrao, sim para os tipos da
-        allowlist.
+        SER TENTADO e SER RESOLVIDO deixaram de ser a mesma coisa em 04/09/2026.
+
+        Antes, `automatizavel` saia de `TIPOS_AUTOMATICOS_REPRESENTACAO` — o que
+        fazia sentido enquanto a allowlist era estreita e coincidia com o que o
+        solver dava conta. Agora a representacao TENTA todo desafio, e derivar
+        dali passaria a dizer que o duble resolve TUDO, apagando o caminho
+        humano de toda a suite de uma vez.
+
+        `automatizavel` passa a significar uma coisa so: o duble CONCLUI este
+        tipo. Quem quer o caminho humano pede `automatizavel=False` — que e
+        exatamente o contrato novo: tentou, nao deu, vai para a pessoa.
         """
         self.captcha = True
         self.captcha_tipo = tipo
         self.captcha_automatizavel = (
-            tipo in login.TIPOS_AUTOMATICOS_REPRESENTACAO
-            if automatizavel is None else automatizavel)
+            tipo in self.RESOLVIVEIS if automatizavel is None else automatizavel)
 
 
 class _Locator:
