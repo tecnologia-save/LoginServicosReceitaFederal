@@ -115,6 +115,52 @@ CERT_SELECTORS = [
 ]
 
 
+# Onde a política do Chrome vive no Windows. As três chaves, porque a instalação
+# varia: 32/64 bits e por-máquina/por-usuário.
+_CHAVES_POLITICA_CERT = (
+    (r"SOFTWARE\Policies\Google\Chrome\AutoSelectCertificateForUrls", "HKLM"),
+    (r"SOFTWARE\WOW6432Node\Policies\Google\Chrome\AutoSelectCertificateForUrls", "HKLM"),
+    (r"SOFTWARE\Policies\Google\Chrome\AutoSelectCertificateForUrls", "HKCU"),
+)
+
+
+def politica_de_certificado_instalada() -> bool:
+    """A política que faz o Chrome escolher o certificado sozinho existe AQUI?
+
+    Isto era ASSUMIDO, e a suposição estava errada nesta máquina.
+
+    `--auto-select-certificate-for-urls` na linha de comando NÃO é um switch do
+    Chrome: o mecanismo real é a política corporativa `AutoSelectCertificateForUrls`,
+    lida do registro. A flag é aceita em silêncio e ignorada — não há erro, não
+    há log, o Chrome simplesmente pergunta.
+
+    Com `policy_ok=True` fixo, o fallback que clica no diálogo nunca era armado,
+    e a automação ficava parada num diálogo que ninguém ia fechar. Observado com
+    DOIS certificados instalados e de novo com UM só, o que descarta a teoria de
+    "candidato ambíguo": nunca esteve valendo.
+
+    Perguntar ao registro faz as duas máquinas funcionarem: onde a política
+    existe, o Chrome resolve e ninguém clica; onde não existe, o fallback entra.
+    Falha de leitura devolve False — o custo de armar o clicador à toa é uma
+    thread ociosa; o de NÃO armar é a run travar.
+    """
+    try:
+        import winreg
+    except Exception:  # noqa: BLE001 — fora do Windows não há política nenhuma
+        return False
+    raizes = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
+    for caminho, raiz in _CHAVES_POLITICA_CERT:
+        try:
+            with winreg.OpenKey(raizes[raiz], caminho) as chave:
+                if winreg.QueryInfoKey(chave)[1] > 0:   # ao menos um valor
+                    return True
+        except OSError:
+            continue
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def _build_auto_select_cert_flag(subject_cn: str = "") -> str:
     """Constrói --auto-select-certificate-for-urls filtrando pelo CN do cert selecionado.
 
@@ -1217,7 +1263,7 @@ def main(
     cnpj: str | None = None,
     cert_subject_cn: str | None = None,
     cert_serial: str = "",
-    policy_ok: bool = True,
+    policy_ok: bool | None = None,
     on_manual_challenge=None,
     prazo_intervencao_s: float = 300.0,
 ):
@@ -1282,6 +1328,14 @@ def main(
     if project_dir is None:
         project_dir = Path.cwd()
     project_dir = Path(project_dir)
+
+    # `None` (o padrão) significa DESCUBRA, não "assuma que sim". Quem chama
+    # pode continuar forçando o valor; ninguém mais é obrigado a saber como a
+    # máquina está configurada para que o login funcione nela.
+    if policy_ok is None:
+        policy_ok = politica_de_certificado_instalada()
+        print(f"[cert] Política AutoSelectCertificateForUrls: "
+              f"{'encontrada' if policy_ok else 'AUSENTE — o diálogo será fechado pelo fallback'}.")
 
     # --- Modo A: certificado do Windows Certificate Store (via CN) ---
     usar_windows_store = bool(cert_subject_cn and cert_subject_cn.strip())

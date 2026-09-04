@@ -512,3 +512,33 @@ def test_orcamento_maior_vale_SO_para_a_bola():
     """A grade 3x3 roda todo dia e nao herda nada da folga da animacao."""
     assert login._orcamento_do_captcha(TIPO_GRADE) == (10_000, 25.0)
     assert login.DEADLINE_CAPTCHA_REPRESENTACAO_S == 25.0
+
+
+# ── Politica de certificado: DESCOBRIR, nao assumir ─────────────────────────
+#
+# `policy_ok` era `True` fixo. O codigo assumia que a politica corporativa do
+# Chrome estava instalada e por isso nunca armava o fallback que fecha o dialogo
+# "Selecione um certificado" — e a automacao ficava parada nele.
+#
+# A suposicao estava errada: `--auto-select-certificate-for-urls` na linha de
+# comando NAO e um switch do Chrome. O mecanismo real e a politica lida do
+# registro. A flag e aceita em silencio e ignorada. Observado com DOIS
+# certificados e de novo com UM so — nunca esteve valendo.
+
+def test_politica_e_consultada_e_nao_presumida():
+    """Devolve booleano de verdade, lido do registro — sem excecao fora do Windows."""
+    assert isinstance(login.politica_de_certificado_instalada(), bool)
+
+
+def test_policy_ok_padrao_e_descubra():
+    """`None` = descubra. `True` fixo era o defeito: assumia sem verificar."""
+    import inspect
+    par = inspect.signature(login.main).parameters["policy_ok"]
+    assert par.default is None, "o padrao voltou a assumir em vez de descobrir"
+
+
+def test_quem_chama_ainda_pode_forcar():
+    """Descobrir e o PADRAO, nao uma imposicao: o valor explicito continua valendo."""
+    import inspect
+    anot = inspect.signature(login.main).parameters["policy_ok"].annotation
+    assert "bool" in str(anot) and "None" in str(anot)
