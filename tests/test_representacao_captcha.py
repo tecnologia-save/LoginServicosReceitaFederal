@@ -27,6 +27,7 @@ Sem captcha real, sem Gemini, sem portal.
 import pytest
 from fakes_portal import CNPJ_ALVO, CNPJ_OUTRO, Pagina, Portal
 from resolvedor_captcha import (
+    TIPO_BOLA,
     TIPO_CARTAO_ANIMAL,
     TIPO_DESCONHECIDO,
     TIPO_GRADE,
@@ -248,9 +249,9 @@ def test_o_captcha_do_login_nao_foi_alterado():
 # classificado CORRETAMENTE e mesmo assim seguiu para o solver. So a grade 3x3
 # normal e automatica aqui.
 
-def test_allowlist_tem_exatamente_grade():
-    """UM elemento. Formato novo ou `desconhecido` fica de fora por construcao."""
-    assert login.TIPOS_AUTOMATICOS_REPRESENTACAO == (TIPO_GRADE,)
+def test_allowlist_e_grade_e_bola():
+    """Cada entrada e posta A MAO. Formato novo fica de fora por construcao."""
+    assert login.TIPOS_AUTOMATICOS_REPRESENTACAO == (TIPO_GRADE, TIPO_BOLA)
 
 
 def test_nenhum_outro_tipo_entra_na_allowlist():
@@ -260,7 +261,7 @@ def test_nenhum_outro_tipo_entra_na_allowlist():
         assert tipo not in login.TIPOS_AUTOMATICOS_REPRESENTACAO, tipo
 
 
-@pytest.mark.parametrize("tipo", [TIPO_GRADE])
+@pytest.mark.parametrize("tipo", [TIPO_GRADE, TIPO_BOLA])
 def test_b_c_tipos_da_allowlist_sao_tentados(solver, tipo, capsys):
     pagina, portal = _pagina()
     portal.ao_representar = lambda p: p.exigir_captcha(tipo=tipo)
@@ -414,3 +415,47 @@ def test_o_resolvedor_continua_suportando_grade_fused():
 
     assert rc.TIPO_GRADE_FUSED in rc.TIPOS_CONHECIDOS
     assert rc.TIPO_CARTAO_ANIMAL in rc.TIPOS_CONHECIDOS
+
+
+# ── Orcamento POR TIPO ───────────────────────────────────────────────────────
+#
+# A bola tem captura de 7s antes da primeira chamada; a grade nao tem captura
+# nenhuma. Um teto unico ou aperta a bola ou afrouxa a grade.
+
+def test_bola_tem_orcamento_proprio_e_maior():
+    """Os 25s da grade nao cabem 7s de captura + a latencia medida do modelo."""
+    t_bola, d_bola = login._orcamento_do_captcha(TIPO_BOLA)
+    t_grade, d_grade = login._orcamento_do_captcha(TIPO_GRADE)
+    assert (t_bola, d_bola) == (login.TIMEOUT_GEMINI_BOLA_MS,
+                                login.DEADLINE_CAPTCHA_BOLA_S)
+    assert (t_grade, d_grade) == (login.TIMEOUT_GEMINI_REPRESENTACAO_MS,
+                                  login.DEADLINE_CAPTCHA_REPRESENTACAO_S)
+    assert d_bola > d_grade and t_bola > t_grade
+
+
+def test_orcamento_da_bola_cabe_a_latencia_medida():
+    """Captura 7s + preparo 1s + chamada que estoura + uma que responde."""
+    captura_s = 7.0   # BOLA_FRAMES * BOLA_INTERVALO_S, no ResolvedorCaptcha
+    preparo_s = 1.0
+    pior_caso = captura_s + preparo_s + (login.TIMEOUT_GEMINI_BOLA_MS / 1000) + 10.0
+    assert pior_caso <= login.DEADLINE_CAPTCHA_BOLA_S
+
+
+def test_teto_da_bola_acomoda_a_chamada_mais_lenta_medida():
+    """9,6s foi a pior das 3 amostras — passou a 400ms do teto antigo de 10s."""
+    assert login.TIMEOUT_GEMINI_BOLA_MS >= 12_000
+
+
+def test_nenhum_orcamento_passa_do_limite_do_portal():
+    """Acima de ~1min o portal recusou a representacao numa run real."""
+    assert login.DEADLINE_CAPTCHA_BOLA_S < 60.0
+    assert login.DEADLINE_CAPTCHA_REPRESENTACAO_S < 60.0
+
+
+def test_tipo_fora_da_allowlist_usa_o_orcamento_padrao():
+    """Nao existe caminho em que um tipo novo herde a folga da bola."""
+    for tipo in (TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
+                 TIPO_DESCONHECIDO):
+        assert login._orcamento_do_captcha(tipo) == (
+            login.TIMEOUT_GEMINI_REPRESENTACAO_MS,
+            login.DEADLINE_CAPTCHA_REPRESENTACAO_S), tipo

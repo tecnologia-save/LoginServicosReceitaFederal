@@ -39,6 +39,7 @@ load_dotenv()
 
 from patchright.sync_api import sync_playwright
 from resolvedor_captcha import (
+    TIPO_BOLA,
     TIPO_GRADE,
     TIPO_GRADE_FUSED,
     TIPO_NENHUM,
@@ -511,13 +512,35 @@ PAPEL_ESPERADO = "procurador"
 # repetidamente. Não é caso de melhorar a heurística: o pedido é que qualquer
 # formato que não seja a grade normal vá para o humano.
 #
-# A tupla tem um elemento só de propósito. Formato novo, futuro ou
-# `desconhecido` cai fora dela por construção — nunca por esquecimento.
+# Formato novo, futuro ou `desconhecido` cai fora dela por construção — nunca
+# por esquecimento. Cada entrada precisa ser posta aqui A MÃO, derrubando o gate
+# em tests/test_representacao_captcha.py.
 #
 # Isto NÃO remove suporte a nada no ResolvedorCaptcha: `grade_fused`,
 # `cartao_animal` e `imagem` seguem resolvíveis por outros consumidores e pelo
 # captcha do login. A restrição é da representação no Serviços RF.
-TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE,)
+#
+# `bola_em_movimento` ENTROU em 04/09/2026, e é a primeira adição desde que a
+# tupla foi fechada. Três coisas mudaram desde então:
+#
+#  1. O formato aparece AQUI, na hora de setar o CNPJ — observado diretamente
+#     pelo Jean, não inferido. Sem entrar na allowlist, toda representação que
+#     receber a bola vai para intervenção humana, que é exatamente o custo que
+#     este trabalho existe para eliminar.
+#  2. O tipo passou a EXISTIR. Até hoje `bola_em_movimento` não era vocabulário
+#     de nenhuma das duas bibliotecas: a área é uma imagem única e quadrada,
+#     então o fallback geométrico a classificava `grade_fused` e ela seguia para
+#     um resolvedor que olha UM quadro — incapaz, por construção, de resolver um
+#     desafio cuja resposta só existe na sequência.
+#  3. O motivo pelo qual `grade_fused` saiu daqui — "seguiu para o solver, que
+#     passou a chamar o modelo repetidamente" — era um laço sem teto: as rodadas
+#     internas dos resolvedores não checavam o orçamento, só a cadeia de modelos
+#     checava. Isso foi corrigido no ResolvedorCaptcha; `_solve_bola` para na
+#     rodada em que o orçamento acaba, e se RECUSA a rodar sem deadline.
+#
+# `grade_fused` continua FORA: o motivo dele era o laço, mas nada mede que ele
+# resolva, e não é este trabalho que traz essa medida.
+TIPOS_AUTOMATICOS_REPRESENTACAO = (TIPO_GRADE, TIPO_BOLA)
 
 # Janela curta para o SPA refletir a troca antes de concluirmos que ela não
 # ocorreu. Curta de propósito: quando há captcha, esperar mais não muda nada.
@@ -542,6 +565,41 @@ COOLDOWN_ERRO_REPRESENTACAO_S = 31.0
 # minuto, e o portal recusou a representação em seguida.
 TIMEOUT_GEMINI_REPRESENTACAO_MS = 10_000
 DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
+
+# Orçamento da BOLA, separado — e MEDIDO, ao contrário do de cima.
+#
+# Este formato não tem como caber nos 25 s da grade: a resposta só existe na
+# sequência, então há uma captura de 14 quadros a 0,5 s (7 s) ANTES da primeira
+# chamada ao modelo. O que sobraria para o Gemini seriam 18 s, e é pouco pela
+# medida abaixo.
+#
+# Medido em 04/09/2026 contra as 3 amostras arquivadas, com o prompt de grade
+# que foi para produção (testar_portado.py, 3/3 com eliminação fechada, nome
+# certo e célula certa):
+#
+#     preparo 0,6-0,8 s   |   Gemini 5,4 s / 6,5 s / 9,6 s
+#
+# Os 9,6 s são o motivo do teto por chamada subir de 10 s para 14 s: a chamada
+# mais lenta das três passou a 400 ms do teto antigo. Num dia um pouco pior ela
+# morre por timeout e a rodada inteira se perde — não porque o modelo errou, mas
+# porque o teto foi fixado sem nunca ter sido medido com este prompt.
+#
+# 35 s cobrem o caminho ruim inteiro: captura 7 + preparo 1 + uma chamada que
+# estoura os 14 + uma segunda que responde em ~10. Ficam bem abaixo do "pouco
+# mais de um minuto" que fez o portal recusar a representação na run
+# documentada acima — que continua sendo o limite superior real, e não desce.
+#
+# Amostra de três. Se aparecer representação recusada DEPOIS de "Representação
+# enviada", este número passou do ponto e desce.
+TIMEOUT_GEMINI_BOLA_MS = 14_000
+DEADLINE_CAPTCHA_BOLA_S = 35.0
+
+
+def _orcamento_do_captcha(tipo: str) -> tuple[int, float]:
+    """(timeout por chamada, teto total) do tipo — cada um com a sua medida."""
+    if tipo == TIPO_BOLA:
+        return TIMEOUT_GEMINI_BOLA_MS, DEADLINE_CAPTCHA_BOLA_S
+    return TIMEOUT_GEMINI_REPRESENTACAO_MS, DEADLINE_CAPTCHA_REPRESENTACAO_S
 
 # Janela para surgir QUALQUER desfecho depois de Representar. NÃO é a latência
 # do perfil: o `ESPERA_POS_CONDICAO_S` de 8 s nasceu para isso e ficou governando
@@ -865,10 +923,17 @@ def _resolver_desafio_da_representacao(page, cnpj: str, *, on_manual_challenge,
             # Orçamento CURTO, só aqui: a representação tem o ritmo do portal, e
             # uma resolução que se estende por um minuto chega tarde demais para
             # servir. Os demais consumidores mantêm o padrão do resolvedor.
+            #
+            # POR TIPO, e não um teto único: o tipo já foi classificado acima,
+            # então não há motivo para a grade 3x3 — que responde numa chamada
+            # sobre um screenshot parado — carregar a folga que a animação
+            # precisa. Afrouxar um teto único para caber a bola encompridaria
+            # também o pior caso da grade, que é o formato que roda todo dia.
+            timeout_ms, deadline_s = _orcamento_do_captcha(tipo)
             automatico = solve_hcaptcha(
                 page,
-                gemini_timeout_ms=TIMEOUT_GEMINI_REPRESENTACAO_MS,
-                deadline_s=DEADLINE_CAPTCHA_REPRESENTACAO_S)
+                gemini_timeout_ms=timeout_ms,
+                deadline_s=deadline_s)
         # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
         # formas — chave ausente, dependência indisponível, página morta — e
         # todas significam o mesmo aqui: erro técnico, não trabalho para humano.
