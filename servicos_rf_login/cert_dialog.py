@@ -28,6 +28,65 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s:.\-]", "", (s or "")).upper()
 
 
+# Marcadores das COLUNAS do dialogo. Localizados: sao os cabecalhos que o
+# Chrome desenha em pt-BR. Servem so como ultimo criterio — o primeiro e o
+# titulo da janela aninhada, que nao depende de idioma da tabela.
+_MARCAS_COLUNA = ("EMISSOR", "SERIAL", "TEMA", "ISSUER", "SUBJECT")
+
+
+def _dialogo_dentro(w):
+    """A janela ANINHADA do dialogo, dentro do top-level do Chrome.
+
+    O dialogo de certificado do Chrome nao e uma janela de topo: ele e um
+    `Window` DENTRO da janela do navegador. `Desktop().windows()` devolve so
+    top-level, entao o titulo 'Selecione um certificado' — que casa com
+    TITULO_RE — nunca era visto, e a busca caia no criterio de colunas.
+
+    Devolver a janela ANINHADA, e nao o top-level do Chrome, tambem estreita o
+    resto: `_coletar_elementos` passa a varrer so os controles do dialogo, em
+    vez da pagina inteira do navegador. Sem isso, o serial poderia casar com
+    algum texto da pagina por tras.
+    """
+    try:
+        for d in w.descendants(control_type="Window"):
+            try:
+                if TITULO_RE.search(d.window_text() or ""):
+                    return d
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _tem_marcas_de_coluna(w) -> bool:
+    """Procura TEMA/EMISSOR/SERIAL em QUALQUER controle com texto.
+
+    Antes olhava so `control_type="Text"`, e no dialogo real os cabecalhos sao
+    `DataItem` — medido na maquina do Jean em 08/09/2026:
+
+        Text     (2): 'Selecione um certificado', 'Selecione um certificado p...'
+        DataItem (8): 'Tema', 'Emissor', 'Serial', '26532603025EA596', ...
+
+    Ou seja, os dois unicos `Text` do dialogo sao o titulo e o subtitulo, e
+    nenhum dos marcadores estava entre eles. A busca falhava sempre, em
+    silencio, e o clicador desistia como se o dialogo nao existisse.
+    """
+    try:
+        textos = []
+        for d in w.descendants()[:200]:
+            try:
+                t = d.window_text()
+            except Exception:
+                continue
+            if t:
+                textos.append(t)
+        junto = _norm(" ".join(textos))
+        return any(m in junto for m in _MARCAS_COLUNA)
+    except Exception:
+        return False
+
+
 def _achar_dialogo(timeout: float):
     if not _PYWINAUTO_OK:
         return None
@@ -42,13 +101,18 @@ def _achar_dialogo(timeout: float):
                 if TITULO_RE.search(titulo):
                     return w
                 try:
-                    if w.class_name() == "Chrome_WidgetWin_1":
-                        if w.descendants(title="OK", control_type="Button"):
-                            txt = _norm(" ".join(
-                                d.window_text() for d in w.descendants(control_type="Text")[:30]
-                            ))
-                            if "EMISSOR" in txt or "SERIAL" in txt or "TEMA" in txt:
-                                return w
+                    if w.class_name() != "Chrome_WidgetWin_1":
+                        continue
+                    if not w.descendants(title="OK", control_type="Button"):
+                        continue
+                    # 1) A janela aninhada, pelo titulo. Criterio principal.
+                    interno = _dialogo_dentro(w)
+                    if interno is not None:
+                        return interno
+                    # 2) Colunas, em qualquer tipo de controle. Rede de seguranca
+                    #    para uma arvore UIA diferente da medida.
+                    if _tem_marcas_de_coluna(w):
+                        return w
                 except Exception:
                     pass
         except Exception:
