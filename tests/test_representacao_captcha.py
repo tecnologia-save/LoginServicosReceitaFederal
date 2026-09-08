@@ -499,10 +499,13 @@ def test_nenhum_orcamento_passa_do_limite_medido_do_portal():
         assert MAIOR_REPRESENTACAO_CONFIRMADA_S - teto >= 10.0, teto
 
 
-def test_tipo_fora_da_allowlist_usa_o_orcamento_padrao():
-    """Nao existe caminho em que um tipo novo herde a folga da bola."""
-    for tipo in (TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL, TIPO_IMAGEM,
-                 TIPO_DESCONHECIDO):
+def test_tipo_sem_orcamento_proprio_usa_o_padrao():
+    """Nao existe caminho em que um tipo novo herde a folga de outro.
+
+    `TIPO_IMAGEM` saiu desta lista em 08/09/2026, quando ganhou orcamento
+    proprio: ele tem CINCO rodadas, e os 25 s da grade o cortavam na segunda.
+    """
+    for tipo in (TIPO_GRADE_FUSED, TIPO_CARTAO_ANIMAL, TIPO_DESCONHECIDO):
         assert login._orcamento_do_captcha(tipo) == (
             login.TIMEOUT_GEMINI_REPRESENTACAO_MS,
             login.DEADLINE_CAPTCHA_REPRESENTACAO_S), tipo
@@ -556,3 +559,46 @@ def test_cn_do_ambiente_liga_o_modo_windows_store():
     import inspect
     fonte = inspect.getsource(login.main)
     assert 'os.getenv("CERT_SUBJECT_CN"' in fonte
+
+
+# ── Clique unico em imagem livre tem orcamento proprio ──────────────────────
+#
+# Ele herdava os 25 s da grade 3x3, e a comparacao nao se sustenta: a grade
+# responde numa chamada sobre um screenshot parado; `_solve_imagem` tem CINCO
+# rodadas, cada uma com dois screenshots e uma chamada. Com 25 s ele nao passava
+# da segunda — o resolvedor certo era chamado e cortado no meio.
+
+def test_imagem_tem_orcamento_maior_que_a_grade():
+    t_img, d_img = login._orcamento_do_captcha(login.TIPO_IMAGEM)
+    t_grade, d_grade = login._orcamento_do_captcha(login.TIPO_GRADE)
+    assert d_img > d_grade
+    assert t_img > t_grade
+
+
+def test_imagem_alcanca_a_quarta_rodada():
+    """O segundo provedor entra na 4a rodada. Com 25 s ele nunca era jogado —
+    a carta de acuracia existia e nao chegava a este formato, que e justamente
+    onde ela mediu 3/3."""
+    CAPTURA_S = 2.0      # dois screenshots por rodada
+    CHAMADA_S = 7.9      # pior das amostras medidas em 08/09/2026
+    _t, teto = login._orcamento_do_captcha(login.TIPO_IMAGEM)
+    quatro_rodadas = 4 * (CAPTURA_S + CHAMADA_S)
+    assert teto >= quatro_rodadas, (
+        f"teto de {teto}s nao alcanca a 4a rodada ({quatro_rodadas:.1f}s)")
+
+
+def test_imagem_custa_menos_que_a_bola():
+    """Aqui nao ha captura de animacao — sao os 7 s por rodada dela que
+    justificam o dobro."""
+    _t, d_img = login._orcamento_do_captcha(login.TIPO_IMAGEM)
+    _t2, d_bola = login._orcamento_do_captcha(login.TIPO_BOLA)
+    assert d_img < d_bola
+
+
+def test_nenhum_orcamento_encosta_no_limite_do_portal():
+    """70,3 s e a maior representacao CONFIRMADA no historico de dev."""
+    MAIOR_CONFIRMADA_S = 70.3
+    for tipo in (login.TIPO_BOLA, login.TIPO_IMAGEM, login.TIPO_GRADE,
+                 login.TIPO_GRADE_FUSED):
+        _t, teto = login._orcamento_do_captcha(tipo)
+        assert MAIOR_CONFIRMADA_S - teto >= 10.0, tipo

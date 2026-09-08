@@ -810,11 +810,40 @@ DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
 TIMEOUT_GEMINI_BOLA_MS = 14_000
 DEADLINE_CAPTCHA_BOLA_S = 60.0
 
+# Orçamento do CLIQUE ÚNICO em imagem livre ("clique na figura diferente",
+# "clique no ícone que quebra o padrão").
+#
+# Ele estava herdando os 25 s da grade 3x3, e a comparação não se sustenta: a
+# grade responde numa chamada sobre um screenshot parado, enquanto
+# `_solve_imagem` tem CINCO rodadas, cada uma com dois screenshots e uma chamada
+# ao modelo. Com 25 s ele não passa da segunda — o resolvedor certo era chamado
+# e cortado no meio.
+#
+# Medido em 08/09/2026, contra as amostras arquivadas deste formato: a chamada
+# leva 5,2 a 7,9 s. Uma rodada custa ~2 s de captura + a chamada, então:
+#
+#     3 rodadas (o rodízio ouve os três modelos do Gemini)   ~30 s
+#     4ª rodada, já no segundo provedor                      ~10 s
+#
+# 45 s cobrem isso. NÃO são os 60 s da bola porque aqui não há captura de
+# animação — a de 7 s por rodada é o que faz a bola custar o dobro.
+#
+# O astra entra na 4ª rodada (ver `_gemini_call`), e com 25 s ele nunca era
+# alcançado: a carta de acurácia existia e não chegava a ser jogada neste
+# formato, que é justamente onde ele mediu 3/3.
+#
+# Teto superior continua sendo o do portal: 70,3 s é a maior representação
+# CONFIRMADA no histórico. 45 s ficam 25 s abaixo.
+TIMEOUT_GEMINI_IMAGEM_MS = 12_000
+DEADLINE_CAPTCHA_IMAGEM_S = 45.0
+
 
 def _orcamento_do_captcha(tipo: str) -> tuple[int, float]:
     """(timeout por chamada, teto total) do tipo — cada um com a sua medida."""
     if tipo == TIPO_BOLA:
         return TIMEOUT_GEMINI_BOLA_MS, DEADLINE_CAPTCHA_BOLA_S
+    if tipo == TIPO_IMAGEM:
+        return TIMEOUT_GEMINI_IMAGEM_MS, DEADLINE_CAPTCHA_IMAGEM_S
     return TIMEOUT_GEMINI_REPRESENTACAO_MS, DEADLINE_CAPTCHA_REPRESENTACAO_S
 
 # Janela para surgir QUALQUER desfecho depois de Representar. NÃO é a latência
