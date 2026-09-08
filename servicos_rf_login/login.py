@@ -513,6 +513,52 @@ def _fechar_popups_iniciais(page) -> None:
         pass
 
 
+# Páginas de erro do SSO, pelo TÍTULO que o servidor devolve. São telas cruas
+# do servidor, sem nada do portal — nenhum seletor que a automação espera existe
+# nelas, então ela fica esperando um elemento que nunca vai aparecer, até o
+# timeout, e o log só mostra "aguardando redirecionamento" repetido.
+#
+# Relatado pelo Jean em 08/09/2026 como recorrente, junto com 404 e 403.
+#
+# O 408 tem causa provável conhecida, e vale registrar: o passo
+# `authorize?...govbr_recupera_certificadox509` pede o certificado do cliente
+# DURANTE o handshake TLS. Enquanto o diálogo "Selecione um certificado" fica
+# aberto esperando alguém clicar, a requisição não se completa — e a mensagem do
+# 408 é literalmente "Your browser didn't send a complete request in time". Se
+# for isso, o 408 é sintoma do diálogo, e some quando ele for fechado sozinho.
+_ERROS_HTTP_DO_SSO = (
+    ("408", "request time-out", "request timeout"),
+    ("403", "forbidden", "acesso negado"),
+    ("404", "not found", "página não encontrada"),
+    ("502", "bad gateway"),
+    ("503", "service unavailable"),
+    ("504", "gateway time-out", "gateway timeout"),
+)
+
+
+def pagina_de_erro_http(page) -> str:
+    """Devolve o código do erro se a tela for uma página de erro crua do SSO.
+
+    Só o CÓDIGO sai daqui — nunca o corpo da página, que pode carregar
+    identificadores do fluxo OAuth (`state`, `nonce`, e em algumas etapas o
+    documento do contribuinte).
+
+    Devolve "" quando não é página de erro.
+    """
+    try:
+        titulo = (page.title() or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not titulo or len(titulo) > 120:
+        # Página de erro do servidor tem título curto. Portal de verdade tem
+        # título longo e cheio de marca — não vale a pena inspecionar o corpo.
+        return ""
+    for codigo, *marcas in _ERROS_HTTP_DO_SSO:
+        if codigo in titulo or any(m in titulo for m in marcas):
+            return codigo
+    return ""
+
+
 def _acesso_bloqueado(page) -> bool:
     """Detecta a mensagem de bloqueio por comportamento automatizado."""
     try:
@@ -1100,10 +1146,22 @@ def _resolver_desafio_da_representacao(page, cnpj: str, *, on_manual_challenge,
             # precisa. Afrouxar um teto único para caber a bola encompridaria
             # também o pior caso da grade, que é o formato que roda todo dia.
             timeout_ms, deadline_s = _orcamento_do_captcha(tipo)
+            # O tipo vai JUNTO. Sem isto o solver reclassificava por dentro, e
+            # era a segunda decisão que escolhia o resolvedor — duas leituras
+            # independentes da mesma tela, que podem discordar. Discordaram em
+            # 08/09/2026: aqui deu `bola_em_movimento` (sonda 0,33%) e lá dentro
+            # `grade_fused` (sonda 0,25%), com limiar em 0,3%. O desafio animado
+            # foi para o resolvedor de quadro parado, respondeu certo três vezes
+            # e teve as três descartadas pelo guardião de frescor — porque num
+            # desafio que se mexe a impressão digital muda sempre.
+            #
+            # Também torna verdadeiro o que o comentário da classificação acima
+            # já afirmava: "classificação UMA vez, aqui".
             automatico = solve_hcaptcha(
                 page,
                 gemini_timeout_ms=timeout_ms,
-                deadline_s=deadline_s)
+                deadline_s=deadline_s,
+                tipo_ja_classificado=tipo)
         # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
         # formas — chave ausente, dependência indisponível, página morta — e
         # todas significam o mesmo aqui: erro técnico, não trabalho para humano.
@@ -1583,6 +1641,16 @@ def main(
                       f"host={host_da_url(page.url)}")
                 if _ja_logado(page):
                     print("  -> Redirecionamento confirmado.")
+                    break
+                # Numa página de erro do SSO não há o que esperar: nenhum
+                # seletor do portal existe ali. Sem isto a automação gasta os
+                # 60 s inteiros contra uma tela que já respondeu, e o log só
+                # mostra "aguardando redirecionamento" repetido — que foi o que
+                # o Jean descreveu como "a automação se perde".
+                erro_http = pagina_de_erro_http(page)
+                if erro_http:
+                    print(f"  -> Página de erro do SSO (HTTP {erro_http}) — "
+                          "não adianta esperar.")
                     break
                 time.sleep(1)
             else:

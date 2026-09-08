@@ -289,13 +289,35 @@ def test_papel_diferente_nao_confirma(portal):
 # ══ 3 · Captcha: allowlist, orcamento e caminho manual ══════════════════════
 
 def test_a_representacao_usa_orcamento_curto_no_solver(portal):
-    """O captcha da representacao nao pode custar um minuto."""
+    """O captcha da representacao nao pode custar um minuto.
+
+    `tipo_ja_classificado` entrou em 08/09/2026: o solver reclassificava a mesma
+    tela por dentro e podia DISCORDAR de quem o chamou — e discordou em
+    producao, mandando um desafio animado para o resolvedor de quadro parado.
+    Passar o tipo torna verdadeiro o que o codigo ja afirmava: classificacao uma
+    vez so.
+    """
     p = portal(Portal(["captcha_confirma"]))
     assert representar(p) is True
     assert p.solves_kwargs == [{
         "gemini_timeout_ms": login.TIMEOUT_GEMINI_REPRESENTACAO_MS,
         "deadline_s": login.DEADLINE_CAPTCHA_REPRESENTACAO_S,
+        "tipo_ja_classificado": login.TIPO_GRADE,
     }]
+
+
+def test_o_tipo_classificado_aqui_e_o_que_o_solver_usa(portal):
+    """Duas leituras independentes da mesma tela podem discordar.
+
+    Em producao: aqui deu `bola_em_movimento` (sonda 0,33%) e dentro do solver
+    `grade_fused` (sonda 0,25%), com limiar em 0,3%. O animado foi para o
+    resolvedor de quadro parado, respondeu certo tres vezes e teve as tres
+    descartadas pelo guardiao de frescor.
+    """
+    p = portal(Portal(["captcha_confirma"], tipo=login.TIPO_BOLA))
+    representar(p)
+    assert p.solves_kwargs, "o solver nem foi chamado"
+    assert p.solves_kwargs[0]["tipo_ja_classificado"] == login.TIPO_BOLA
 
 
 def test_captcha_nao_resolvido_vai_ao_humano_apos_tentar(portal):
