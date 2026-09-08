@@ -1338,6 +1338,23 @@ def main(
               f"{'encontrada' if policy_ok else 'AUSENTE — o diálogo será fechado pelo fallback'}.")
 
     # --- Modo A: certificado do Windows Certificate Store (via CN) ---
+    #
+    # O CN também vem do AMBIENTE quando o parâmetro não foi passado.
+    #
+    # Quem instala o certificado já publica `CERT_SUBJECT_CN` no ambiente antes
+    # de chamar o login — mas esta função lia só o parâmetro. Resultado: o CN
+    # existia, ninguém lia, `usar_windows_store` ficava False e caíam TRÊS
+    # coisas de uma vez: a flag de auto-seleção não era montada, o fallback que
+    # fecha o diálogo não era armado, e o login caía no modo .pfx, que este
+    # próprio arquivo documenta como quebrado com ICP-Brasil (o proxy TLS do
+    # Node responde SSL alert 40).
+    #
+    # O diálogo "Selecione um certificado" ficava aberto esperando uma pessoa.
+    if not (cert_subject_cn and cert_subject_cn.strip()):
+        do_ambiente = os.getenv("CERT_SUBJECT_CN", "").strip()
+        if do_ambiente:
+            cert_subject_cn = do_ambiente
+            print("[cert] CN lido do ambiente (CERT_SUBJECT_CN).")
     usar_windows_store = bool(cert_subject_cn and cert_subject_cn.strip())
     resolved_path = resolved_pass = None
 

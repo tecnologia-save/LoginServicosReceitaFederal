@@ -542,3 +542,17 @@ def test_quem_chama_ainda_pode_forcar():
     import inspect
     anot = inspect.signature(login.main).parameters["policy_ok"].annotation
     assert "bool" in str(anot) and "None" in str(anot)
+
+
+def test_cn_do_ambiente_liga_o_modo_windows_store():
+    """O CN existia em CERT_SUBJECT_CN e o login lia so o parametro.
+
+    Consequencia: `usar_windows_store` ficava False e caiam TRES coisas juntas —
+    a flag de auto-selecao nao era montada, o fallback do dialogo nao era armado,
+    e o login caia no modo .pfx, que o proprio arquivo documenta como quebrado
+    com ICP-Brasil. O dialogo "Selecione um certificado" ficava aberto esperando
+    uma pessoa que, na VM, nao existe.
+    """
+    import inspect
+    fonte = inspect.getsource(login.main)
+    assert 'os.getenv("CERT_SUBJECT_CN"' in fonte
