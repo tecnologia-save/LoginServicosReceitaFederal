@@ -459,19 +459,65 @@ def _clicar_entrar_govbr(page) -> bool:
     return False
 
 
+# Orçamento de tempo do captcha DE LOGIN.
+#
+# Antes não havia nenhum: a chamada era `solve_hcaptcha(page)` pelado, com o
+# padrão do resolvedor (30 s por chamada, teto total nenhum). Três coisas
+# tornaram isso insustentável.
+#
+# 1) O LOGIN TEM PRAZO, ao contrário do que "sem teto" assumia. Observado
+#    diretamente numa run com o desafio animado: "passou o tempo limite e o eCAC
+#    fechou o captcha". Sem teto, a automação segue resolvendo um desafio que já
+#    morreu na tela.
+#
+# 2) `_solve_bola` se RECUSA a rodar sem deadline, de propósito — captura os
+#    quadros antes de qualquer chamada, e sem prazo isso vira consumo aberto.
+#    Como o desafio animado aparece TAMBÉM no login (confirmado em 08/09/2026),
+#    sem orçamento aqui ele não era nem tentado.
+#
+# 3) O 408 do SSO. O passo `authorize?...govbr_recupera_certificadox509` pede o
+#    certificado durante o handshake TLS; uma resolução que se estende sem teto
+#    deixa a requisição pendurada, e a mensagem do 408 é literalmente "Your
+#    browser didn't send a complete request in time".
+#
+# 120 s, MAIOR que o da representação de propósito: aqui não existe o relógio do
+# portal, que lá limita tudo a ~70 s. É essa folga que permite ao resolvedor
+# animado usar a janela de captura longa sem apertar nada — na representação ela
+# mal cabe.
+#
+# Teto TOTAL, dividido entre as tentativas, e não por tentativa: com 3 tentativas
+# de 120 s cada o pior caso passaria de seis minutos. O que cada tentativa recebe
+# é o que SOBROU.
+TIMEOUT_GEMINI_LOGIN_MS = 20_000
+DEADLINE_CAPTCHA_LOGIN_S = 120.0
+
+
 def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
-    """Tenta resolver o hCaptcha até `max_attempts` vezes.
+    """Tenta resolver o hCaptcha até `max_attempts` vezes, dentro de um teto TOTAL.
 
     Move o mouse uma única vez antes de resolver para evitar detecção de automação.
     """
-    print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas)...")
+    print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas, "
+          f"teto total {DEADLINE_CAPTCHA_LOGIN_S:.0f}s)...")
+    fim = time.monotonic() + DEADLINE_CAPTCHA_LOGIN_S
     for tentativa in range(1, max_attempts + 1):
+        restante = fim - time.monotonic()
+        if restante <= 10.0:
+            # Menos que isso não dá nem para a captura da animação começar; a
+            # tentativa só gastaria o desafio sem chance de concluí-la.
+            print(f"[{etapa}] orçamento esgotado ({restante:.0f}s restantes) — "
+                  f"parando na tentativa {tentativa}.")
+            break
         try:
-            resultado = solve_hcaptcha(page)
+            resultado = solve_hcaptcha(
+                page,
+                gemini_timeout_ms=TIMEOUT_GEMINI_LOGIN_MS,
+                deadline_s=restante)
             if resultado:
                 print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: OK (resolvido ou ausente).")
                 return True
-            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False.")
+            print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False "
+                  f"({fim - time.monotonic():.0f}s restantes).")
         except Exception as e:
             print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: "
                   f"{type(e).__name__}")

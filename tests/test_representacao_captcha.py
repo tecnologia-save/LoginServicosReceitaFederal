@@ -231,12 +231,26 @@ def test_falha_do_resolvedor_esta_na_api_publica():
     assert "FalhaDoResolvedorCaptcha" in pacote.__all__
 
 
-def test_o_captcha_do_login_nao_foi_alterado():
-    """O desafio inicial ja funcionava e segue pelo mesmo caminho."""
+def test_o_captcha_do_login_ganhou_orcamento_mas_nao_janela_manual():
+    """Esta guarda EXISTIA para manter o login intocado, e foi cruzada de
+    proposito em 08/09/2026, com autorizacao do Jean.
+
+    O que ela protegia continua protegido: o login NAO ganha janela manual —
+    nao ha pessoa esperando ali, e injetar `on_manual_challenge` faria a run
+    parar por alguem que nao existe.
+
+    O que mudou e o orcamento de tempo, e ele nao era neutro por ausencia:
+    `_solve_bola` se RECUSA a rodar sem deadline, entao o formato animado — que
+    aparece TAMBEM no login — nao era nem tentado. "Nao alterar" custava um
+    formato inteiro.
+    """
     import inspect
     fonte = inspect.getsource(login._try_solve_captcha)
-    assert "solve_hcaptcha(page)" in fonte
-    assert "on_manual_challenge" not in fonte
+    assert "on_manual_challenge" not in fonte, (
+        "o login nao pode ganhar janela manual: nao ha pessoa esperando ali")
+    assert "solve_hcaptcha(page)" not in fonte, (
+        "voltou a chamar sem orcamento — o animado deixa de ser tentado")
+    assert "deadline_s=restante" in fonte
 
 
 # ══ Politica POR TIPO — allowlist da representacao ══════════════════════════
