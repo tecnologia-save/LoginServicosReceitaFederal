@@ -106,6 +106,27 @@ CERT_ORIGINS = [
 ]
 
 # Seletores tentados em ordem para o botão "Seu certificado digital"
+# Seletores tentados em ordem para "Entrar com gov.br".
+#
+# Era UM XPath posicional — `//*[@id="home-heading"]/div[1]/div/button` — em dois
+# lugares do arquivo. Em 08/09/2026 ele parou de casar: a RUN-002583a5 morreu com
+# "botão 'Entrar com gov.br' não encontrado. TimeoutError" enquanto o botão
+# estava VISÍVEL no canto superior direito da tela. XPath por posição quebra com
+# qualquer `div` que a Receita insira no caminho, e não avisa — só some.
+#
+# Mesma estrutura de CERT_SELECTORS abaixo, e pelo mesmo motivo: o primeiro é o
+# específico (barato quando o DOM está como se espera), e os seguintes são por
+# TEXTO, que sobrevive a rearranjo de layout.
+GOVBR_SELECTORS = [
+    'xpath=//*[@id="home-heading"]/div[1]/div/button',
+    "#home-heading button",
+    "button:has-text('Entrar com gov.br')",
+    "a:has-text('Entrar com gov.br')",
+    "[aria-label*='Entrar com gov.br']",
+    "button:has-text('Entrar com')",
+    "text=Entrar com gov.br",
+]
+
 CERT_SELECTORS = [
     "#login-certificate",
     "a:has-text('Seu certificado digital')",
@@ -392,6 +413,28 @@ def _clicar_certificado(page) -> bool:
     return False
 
 
+def _clicar_entrar_govbr(page) -> bool:
+    """Clica em "Entrar com gov.br" tentando os seletores em ordem.
+
+    Espelha `_clicar_certificado`: o primeiro seletor ganha a espera longa
+    (é o caminho esperado), os demais são verificações rápidas de fallback.
+    """
+    print("Clicando em 'Entrar com gov.br'...")
+    for i, sel in enumerate(GOVBR_SELECTORS):
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(state="visible", timeout=15_000 if i == 0 else 2_000)
+            if i:
+                print(f"  -> match com seletor alternativo: {sel}")
+            loc.click()
+            print("  -> clicado.")
+            return True
+        except Exception:
+            continue
+    print("  -> botão 'Entrar com gov.br' não encontrado em nenhum seletor.")
+    return False
+
+
 def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
     """Tenta resolver o hCaptcha até `max_attempts` vezes.
 
@@ -495,15 +538,13 @@ def _recuperar_acesso_bloqueado(page) -> bool:
             pass
 
     print("[bloqueado] Re-clicando 'Entrar com gov.br'...")
-    govbr_btn = page.locator('xpath=//*[@id="home-heading"]/div[1]/div/button').first
-    try:
-        govbr_btn.wait_for(state="visible", timeout=10_000)
-        govbr_btn.click()
-        page.wait_for_load_state("domcontentloaded", timeout=20_000)
-    except Exception as e:
-        print("[bloqueado] Botão 'Entrar com gov.br' não encontrado após "
-              f"go_back: {type(e).__name__}")
+    if not _clicar_entrar_govbr(page):
+        print("[bloqueado] Botão 'Entrar com gov.br' não encontrado após go_back.")
         return False
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=20_000)
+    except Exception:  # noqa: BLE001, S110 — a espera de load é best-effort
+        pass
 
     return _try_solve_captcha(page, "captcha-pos-bloqueado")
 
@@ -1430,21 +1471,14 @@ def main(
             print("  -> Redirecionado automaticamente. Login concluído.")
 
         # --- Clicar em "Entrar com gov.br" ---
-        print("Clicando em 'Entrar com gov.br'...")
-        govbr_btn = page.locator('xpath=//*[@id="home-heading"]/div[1]/div/button').first
-        try:
-            govbr_btn.wait_for(state="visible", timeout=15_000)
-            govbr_btn.click()
-            print("  -> clicado.")
-        except Exception as e:
-            registrar_erro("Login: botão 'Entrar com gov.br' não encontrado. "
-                           f"{type(e).__name__}")
-            print(f"  -> botão não encontrado: {type(e).__name__}")
+        if not _clicar_entrar_govbr(page):
+            registrar_erro("Login: botão 'Entrar com gov.br' não encontrado "
+                           "em nenhum dos seletores.")
             try:
                 shot = str(project_dir / "_debug_govbr_btn.png")
                 page.screenshot(path=shot, full_page=True)
                 print("     screenshot de debug gravado.")
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — debug nunca derruba
                 pass
             return _abortar(p, context)
 

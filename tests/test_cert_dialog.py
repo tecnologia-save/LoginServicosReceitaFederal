@@ -143,3 +143,40 @@ def test_janela_do_chrome_sem_dialogo_nao_e_confundida(monkeypatch):
 def test_sem_pywinauto_nao_explode(monkeypatch):
     monkeypatch.setattr(cert_dialog, "_PYWINAUTO_OK", False)
     assert cert_dialog._achar_dialogo(timeout=0.5) is None
+
+
+# ── "Entrar com gov.br": XPath posicional era ponto unico de falha ──────────
+#
+# A RUN-002583a5 (08/09/2026) morreu com "botão 'Entrar com gov.br' não
+# encontrado. TimeoutError" enquanto o botao estava VISIVEL no canto superior
+# direito da tela. O seletor era um XPath por POSICAO —
+# //*[@id="home-heading"]/div[1]/div/button — que quebra com qualquer div que a
+# Receita insira no caminho, e nao avisa: so para de casar.
+
+def test_ha_mais_de_um_seletor_para_o_botao_govbr():
+    from servicos_rf_login import login
+    assert len(login.GOVBR_SELECTORS) >= 3
+
+
+def test_ha_fallback_por_TEXTO_e_nao_so_por_posicao():
+    """Texto sobrevive a rearranjo de layout; XPath posicional nao."""
+    from servicos_rf_login import login
+    por_texto = [s for s in login.GOVBR_SELECTORS
+                 if "gov.br" in s.lower() and "xpath" not in s.lower()]
+    assert por_texto, login.GOVBR_SELECTORS
+
+
+def test_o_xpath_original_continua_sendo_o_primeiro():
+    """Barato quando o DOM esta como se espera — os outros sao rede."""
+    from servicos_rf_login import login
+    assert "home-heading" in login.GOVBR_SELECTORS[0]
+
+
+def test_os_dois_caminhos_usam_o_mesmo_helper():
+    """O seletor vivia duplicado em dois lugares; consertar um deixaria o outro."""
+    import inspect
+    from servicos_rf_login import login
+    fonte = inspect.getsource(login)
+    assert fonte.count('xpath=//*[@id="home-heading"]/div[1]/div/button') == 1, (
+        "o XPath voltou a ser escrito a mao em algum call site")
+    assert fonte.count("_clicar_entrar_govbr(page)") >= 2
