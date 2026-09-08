@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "servicos-rf-login"
-version = "0.1.49"
+version = "0.1.50"
 description = "Login automatizado no portal Serviços da Receita Federal via Patchright com suporte a certificado digital"
 requires-python = ">=3.10"
 dependencies = [
     "patchright",
     "python-dotenv",
-    "ResolvedorCaptcha @ git+https://github.com/tecnologia-save/ResolvedorCaptcha-Python.git@6446ec3d5b1b319663f2221b454f9660ccde08c8",
+    "ResolvedorCaptcha @ git+https://github.com/tecnologia-save/ResolvedorCaptcha-Python.git@eff34dec0f501b736e4a2beed6ce3bc389e30fd8",
 ]
 
 [tool.setuptools.packages.find]
