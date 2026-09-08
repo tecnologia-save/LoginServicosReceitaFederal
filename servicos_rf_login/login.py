@@ -847,7 +847,27 @@ TIMEOUT_GEMINI_BOLA_MS = 14_000
 #
 #     desafio que nunca fecha rodada  ->  desiste em 40 s, não em 60
 #     desafio que fecha a primeira    ->  chega aos mesmos 60 s de antes
-DEADLINE_CAPTCHA_BOLA_S = 40.0
+# 08/09/2026, segunda mudança do dia: 40 s -> 58 s.
+#
+# A captura passou a ser PROGRESSIVA — rodada 1 com 7 s, rodada 2 com 15 s — e a
+# aritmética do pior caso, com os tempos medidos, é:
+#
+#     rodada 1   abertura 5,6 + captura 7 + preparo 1 + chamada 14 + espera 3
+#                = 30,6 s
+#     rodada 2   captura 15 + preparo 1 + chamada 14 + espera 3 = 33,0 s
+#     total      63,6 s
+#
+# Com 40 s a rodada 2 nem começava, e ela é justamente a que olha o dobro do
+# tempo — a única com chance no formato da abelha.
+#
+# A extensão por progresso NÃO ajuda aqui: ela exige uma rodada CONCLUÍDA, e no
+# caso da abelha nenhuma fecha. Por isso o orçamento inicial precisa cobrir as
+# duas sozinho.
+#
+# O CUSTO É REAL e vale dito: uma abelha que não fecha passa a gastar ~58 s por
+# empresa, contra 40 s antes. Foi decisão do Jean pedir captura mais longa, e
+# esse é o preço dela.
+DEADLINE_CAPTCHA_BOLA_S = 58.0
 
 # Orçamento do CLIQUE ÚNICO em imagem livre ("clique na figura diferente",
 # "clique no ícone que quebra o padrão").
