@@ -838,6 +838,24 @@ TIMEOUT_GEMINI_IMAGEM_MS = 12_000
 DEADLINE_CAPTCHA_IMAGEM_S = 45.0
 
 
+# TETO DURO, alcançável só com progresso comprovado.
+#
+# O hCaptcha faz DUAS rodadas por desafio. Um teto contado desde o início não
+# sabe disso: resolve a primeira e é cortado no meio da segunda, jogando fora o
+# trabalho já feito. Relatado pelo Jean em 08/09/2026 — "solucionou o primeiro,
+# e depois o outro não".
+#
+# Aumentar o teto fixo resolveria isso e pagaria caro no caso ruim: um desafio
+# que nunca fecha rodada nenhuma consumiria o teto inteiro antes de desistir.
+# Por isso a extensão é CONDICIONAL — só ganha tempo quem submeteu uma rodada
+# com sucesso e viu outra aparecer.
+#
+# 60 s ficam 10,3 s abaixo dos 70,3 s da maior representação CONFIRMADA no
+# histórico de dev. É o mesmo teto da bola, e pelo mesmo motivo: é o limite do
+# portal que manda, não o do resolvedor.
+DEADLINE_MAX_COM_PROGRESSO_S = 60.0
+
+
 def _orcamento_do_captcha(tipo: str) -> tuple[int, float]:
     """(timeout por chamada, teto total) do tipo — cada um com a sua medida."""
     if tipo == TIPO_BOLA:
@@ -1190,6 +1208,10 @@ def _resolver_desafio_da_representacao(page, cnpj: str, *, on_manual_challenge,
                 page,
                 gemini_timeout_ms=timeout_ms,
                 deadline_s=deadline_s,
+                # Fôlego extra SÓ com progresso comprovado — ver
+                # DEADLINE_MAX_COM_PROGRESSO_S. Resolver a primeira rodada e ser
+                # cortado na segunda desperdiça o trabalho já feito.
+                deadline_max_s=DEADLINE_MAX_COM_PROGRESSO_S,
                 tipo_ja_classificado=tipo)
         # BLE001: a captura ampla é o ponto. O resolvedor pode falhar de muitas
         # formas — chave ausente, dependência indisponível, página morta — e

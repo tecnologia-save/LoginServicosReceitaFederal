@@ -302,6 +302,7 @@ def test_a_representacao_usa_orcamento_curto_no_solver(portal):
     assert p.solves_kwargs == [{
         "gemini_timeout_ms": login.TIMEOUT_GEMINI_REPRESENTACAO_MS,
         "deadline_s": login.DEADLINE_CAPTCHA_REPRESENTACAO_S,
+        "deadline_max_s": login.DEADLINE_MAX_COM_PROGRESSO_S,
         "tipo_ja_classificado": login.TIPO_GRADE,
     }]
 
@@ -941,3 +942,32 @@ def test_o_mesmo_desfecho_nao_e_anunciado_duas_vezes(portal, capsys):
     representar(p)
     saida = capsys.readouterr().out
     assert saida.count("Desfecho observado | tipo=erro_portal") == 1
+
+
+
+# ── Folego extra SO com progresso comprovado ───────────────────────────────
+#
+# O hCaptcha faz DUAS rodadas por desafio. Um teto contado desde o inicio
+# resolve a primeira e e cortado no meio da segunda, jogando fora o trabalho ja
+# feito — relatado em 08/09/2026 como "solucionou o primeiro, e depois o outro
+# nao".
+#
+# Aumentar o teto fixo pagaria caro no caso ruim: um desafio que nunca fecha
+# rodada nenhuma consumiria o teto inteiro antes de desistir.
+
+def test_o_teto_duro_vai_junto_para_o_solver(portal):
+    p = portal(Portal(["captcha_confirma"]))
+    representar(p)
+    assert p.solves_kwargs[0]["deadline_max_s"] == login.DEADLINE_MAX_COM_PROGRESSO_S
+
+
+def test_o_teto_duro_e_maior_que_o_orcamento_inicial():
+    """Se fosse igual, nao haveria folego nenhum a conceder."""
+    for tipo in (login.TIPO_GRADE, login.TIPO_IMAGEM):
+        _t, inicial = login._orcamento_do_captcha(tipo)
+        assert login.DEADLINE_MAX_COM_PROGRESSO_S > inicial, tipo
+
+
+def test_o_teto_duro_respeita_o_limite_do_portal():
+    """70,3 s e a maior representacao CONFIRMADA no historico de dev."""
+    assert 70.3 - login.DEADLINE_MAX_COM_PROGRESSO_S >= 10.0
