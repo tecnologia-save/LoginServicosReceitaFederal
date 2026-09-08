@@ -1636,6 +1636,11 @@ def main(
 
             # Aguarda redirecionamento final (até 60s)
             print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
+            # O erro do SSO precisa SAIR do laço carregando o motivo, e não só
+            # interrompê-lo: um `break` seco cairia no caminho de sucesso e a
+            # automação anunciaria "login concluído" olhando uma tela de erro —
+            # que é pior do que a espera cega que ele veio corrigir.
+            erro_sso = ""
             for _seg in range(60):
                 print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
                       f"host={host_da_url(page.url)}")
@@ -1647,9 +1652,9 @@ def main(
                 # 60 s inteiros contra uma tela que já respondeu, e o log só
                 # mostra "aguardando redirecionamento" repetido — que foi o que
                 # o Jean descreveu como "a automação se perde".
-                erro_http = pagina_de_erro_http(page)
-                if erro_http:
-                    print(f"  -> Página de erro do SSO (HTTP {erro_http}) — "
+                erro_sso = pagina_de_erro_http(page)
+                if erro_sso:
+                    print(f"  -> Página de erro do SSO (HTTP {erro_sso}) — "
                           "não adianta esperar.")
                     break
                 time.sleep(1)
@@ -1664,6 +1669,20 @@ def main(
                     except Exception:
                         pass
                     return _abortar(p, context)
+                continue
+
+            if erro_sso:
+                # Página de erro é tentativa PERDIDA, não login concluído. O
+                # fluxo é o mesmo do timeout: repete enquanto houver tentativa,
+                # e só então desiste — com o CÓDIGO no log, que é o que separa
+                # "o SSO recusou" de "o portal demorou".
+                if tentativa == MAX_TENTATIVAS_CERT:
+                    registrar_erro(
+                        f"Login: SSO respondeu HTTP {erro_sso} no fluxo de "
+                        "autorização.")
+                    return _abortar(p, context)
+                print(f"  -> Nova tentativa após HTTP {erro_sso} "
+                      f"({tentativa}/{MAX_TENTATIVAS_CERT}).")
                 continue
             break
 
