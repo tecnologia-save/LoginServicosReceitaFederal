@@ -459,14 +459,31 @@ def _custo_de_rodada(gemini_s):
     return CAPTURA_S + PREPARO_S + gemini_s + ESPERA_S
 
 
-def test_orcamento_da_bola_cabe_DUAS_rodadas_no_caso_bom():
-    """35s cabiam por 0,4s — teto sem folga, e a segunda rodada morria."""
-    assert RODADAS * _custo_de_rodada(GEMINI_BOM_S) <= login.DEADLINE_CAPTCHA_BOLA_S
+def test_orcamento_INICIAL_da_bola_cabe_UMA_rodada_com_folga():
+    """A segunda rodada passou a vir da EXTENSAO, nao do orcamento inicial.
+
+    Ate 08/09/2026 o inicial era 60s — igual ao teto duro —, e a extensao por
+    progresso valia zero neste formato. Com 40s de inicial, quem nunca fecha
+    uma rodada desiste mais cedo, e quem fecha chega aos mesmos 60s.
+    """
+    ABERTURA_S = 5.6   # classificacao e abertura, medidas em producao
+    pior = ABERTURA_S + _custo_de_rodada(GEMINI_RUIM_S)
+    assert pior <= login.DEADLINE_CAPTCHA_BOLA_S, (
+        f"uma rodada custa {pior:.1f}s e o inicial e {login.DEADLINE_CAPTCHA_BOLA_S}s")
 
 
-def test_orcamento_da_bola_cabe_DUAS_rodadas_no_caso_RUIM():
-    """A folga tem de sobreviver a duas chamadas na pior latencia medida."""
-    assert RODADAS * _custo_de_rodada(GEMINI_RUIM_S) <= login.DEADLINE_CAPTCHA_BOLA_S
+def test_com_progresso_a_bola_alcanca_DUAS_rodadas():
+    """O teto duro e que precisa cobrir as duas — e so quem avanca o alcanca."""
+    ABERTURA_S = 5.6
+    duas = ABERTURA_S + RODADAS * _custo_de_rodada(GEMINI_RUIM_S)
+    assert duas <= login.DEADLINE_MAX_COM_PROGRESSO_S, (
+        f"duas rodadas custam {duas:.1f}s e o teto duro e "
+        f"{login.DEADLINE_MAX_COM_PROGRESSO_S}s")
+
+
+def test_a_extensao_da_bola_nao_e_zero():
+    """O defeito de 08/09/2026: inicial igual ao teto duro anula a extensao."""
+    assert login.DEADLINE_MAX_COM_PROGRESSO_S > login.DEADLINE_CAPTCHA_BOLA_S
 
 
 def test_segunda_rodada_ainda_recebe_orcamento_util():
@@ -587,12 +604,17 @@ def test_imagem_alcanca_a_quarta_rodada():
         f"teto de {teto}s nao alcanca a 4a rodada ({quatro_rodadas:.1f}s)")
 
 
-def test_imagem_custa_menos_que_a_bola():
-    """Aqui nao ha captura de animacao — sao os 7 s por rodada dela que
-    justificam o dobro."""
-    _t, d_img = login._orcamento_do_captcha(login.TIPO_IMAGEM)
-    _t2, d_bola = login._orcamento_do_captcha(login.TIPO_BOLA)
-    assert d_img < d_bola
+def test_a_bola_tem_o_maior_timeout_POR_CHAMADA():
+    """A comparacao util e por chamada: a animacao pede mais raciocinio.
+
+    Nos TETOS a comparacao deixou de valer — o inicial da bola caiu para 40s
+    para dar espaco a extensao, entao ele e menor que o da imagem (45s) mesmo
+    custando mais por rodada. O que a bola tem a mais e a captura de 7s, e ela
+    e paga dentro da rodada, nao no teto.
+    """
+    t_img, _d = login._orcamento_do_captcha(login.TIPO_IMAGEM)
+    t_bola, _d2 = login._orcamento_do_captcha(login.TIPO_BOLA)
+    assert t_bola > t_img
 
 
 def test_nenhum_orcamento_encosta_no_limite_do_portal():

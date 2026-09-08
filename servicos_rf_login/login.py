@@ -808,7 +808,22 @@ DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
 # Vale SÓ para este tipo. `_orcamento_do_captcha` devolve isto apenas quando
 # `tipo == TIPO_BOLA`; a grade 3x3, que roda todo dia, segue nos 25 s / 10 s.
 TIMEOUT_GEMINI_BOLA_MS = 14_000
-DEADLINE_CAPTCHA_BOLA_S = 60.0
+
+# 08/09/2026: este valor CAIU de 60 s para 40 s, e isso é conserto, não recuo.
+#
+# Com 60 s ele era igual ao teto duro `DEADLINE_MAX_COM_PROGRESSO_S`, e a
+# extensão por progresso — criada justamente para o caso "resolveu a primeira
+# rodada e foi cortado na segunda" — valia ZERO neste formato. A run das 15:24
+# provou: classificou `bola_em_movimento` corretamente, com a versão nova
+# instalada, e não ganhou um segundo.
+#
+# 40 s cobrem UMA rodada com folga (abertura 5,6 + captura 7 + preparo 1 +
+# chamada até 14 = ~28 s), e a segunda rodada vem da extensão, até os 60 s. O
+# resultado é melhor nas duas pontas:
+#
+#     desafio que nunca fecha rodada  ->  desiste em 40 s, não em 60
+#     desafio que fecha a primeira    ->  chega aos mesmos 60 s de antes
+DEADLINE_CAPTCHA_BOLA_S = 40.0
 
 # Orçamento do CLIQUE ÚNICO em imagem livre ("clique na figura diferente",
 # "clique no ícone que quebra o padrão").
