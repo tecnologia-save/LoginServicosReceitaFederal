@@ -397,6 +397,30 @@ def _build_client_certificates(cert_path: str, cert_pass: str) -> list[dict]:
     ]
 
 
+def _refazer_entrada_govbr(page) -> bool:
+    """Volta ao portal e refaz o caminho ATÉ a tela de escolha do certificado.
+
+    Recarregar a home não basta: o botão "Seu certificado digital" só existe
+    depois de "Entrar com gov.br". Uma tentativa que só recarrega procura, na
+    home, um botão que vive duas telas adiante — e falha sempre.
+    """
+    try:
+        page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
+    except Exception:  # noqa: BLE001
+        print("  -> Falha ao reabrir o portal.")
+        return False
+    _fechar_popups_iniciais(page)
+    if _ja_logado(page):
+        return True
+    if not _clicar_entrar_govbr(page):
+        return False
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=20_000)
+    except Exception:  # noqa: BLE001, S110 — a espera de load é best-effort
+        pass
+    return True
+
+
 def _clicar_certificado(page) -> bool:
     """Tenta clicar no botão 'Seu certificado digital' usando múltiplos seletores."""
     print("Procurando botão 'Seu certificado digital'...")
@@ -1642,6 +1666,28 @@ def main(
                 print("  -> Já logado no início da tentativa. Saindo do loop.")
                 break
 
+            # Página de erro do SSO ANTES de procurar o botão.
+            #
+            # Sem isto a automação caça "Seu certificado digital" dentro de uma
+            # tela de 408/404, onde ele legitimamente não existe, e reporta
+            # "botão não encontrado" — mandando quem lê investigar o seletor,
+            # que é o lugar errado. Foi o que aconteceu em 08/09/2026 às
+            # 15:31:38 e 15:32:07.
+            erro_antes = pagina_de_erro_http(page)
+            if erro_antes:
+                print(f"[cert] SSO respondeu HTTP {erro_antes} — não há tela de "
+                      "certificado para procurar.")
+                if tentativa == MAX_TENTATIVAS_CERT:
+                    registrar_erro(
+                        f"Login: SSO respondeu HTTP {erro_antes} antes da "
+                        "escolha do certificado.")
+                    return _abortar(p, context)
+                if not _refazer_entrada_govbr(page):
+                    registrar_erro(
+                        "Login: não foi possível refazer a entrada pelo gov.br.")
+                    return _abortar(p, context)
+                continue
+
             if not _clicar_certificado(page):
                 registrar_erro("Login: botão 'Seu certificado digital' não encontrado.")
                 if tentativa == MAX_TENTATIVAS_CERT:
@@ -1653,8 +1699,19 @@ def main(
                     except Exception:
                         pass
                     return _abortar(p, context)
-                print("  -> Recarregando e tentando novamente...")
-                page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
+                # RECOMEÇAR É REFAZER O CAMINHO, não só recarregar.
+                #
+                # Antes isto fazia `goto(SERVICOS_RF_URL)` e caía direto no
+                # `continue` — voltava para a HOME do portal e procurava ali o
+                # botão "Seu certificado digital", que só existe DEPOIS de
+                # clicar em "Entrar com gov.br". As tentativas 2 e 3 eram
+                # perdidas por construção, e o sintoma é exatamente o relatado:
+                # "ficou nessa tela inicial, sem tentativa nova".
+                print("  -> Refazendo a entrada pelo gov.br e tentando novamente...")
+                if not _refazer_entrada_govbr(page):
+                    registrar_erro(
+                        "Login: não foi possível refazer a entrada pelo gov.br.")
+                    return _abortar(p, context)
                 continue
 
             # Fallback: se a policy de auto-seleção não está ativa, o Chrome exibe a

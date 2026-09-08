@@ -93,3 +93,58 @@ def test_erro_do_sso_nao_pode_virar_login_concluido():
     trecho = fonte[pos_flag:pos_sucesso]
     assert "continue" in trecho, "erro do SSO tem de gerar nova tentativa"
     assert "_abortar" in trecho, "esgotadas as tentativas, tem de abortar"
+
+
+# ── Recomecar e REFAZER o caminho, nao so recarregar ───────────────────────
+#
+# A tentativa de recuperacao fazia `goto(SERVICOS_RF_URL)` e caía direto no
+# `continue`: voltava para a HOME do portal e procurava ali "Seu certificado
+# digital", que so existe DEPOIS de "Entrar com gov.br". As tentativas 2 e 3
+# eram perdidas por construcao.
+#
+# Relatado em 08/09/2026: "dei um refresh e ficou nessa tela inicial, sem
+# tentativa nova". Os dois erros no disco (15:31:38 e 15:32:07) sao as duas
+# tentativas mortas.
+
+def test_refazer_entrada_passa_pelo_botao_govbr():
+    """Sem clicar em gov.br, a tela do certificado nunca aparece."""
+    import inspect
+    fonte = inspect.getsource(login._refazer_entrada_govbr)
+    assert "_clicar_entrar_govbr(page)" in fonte
+    assert "SERVICOS_RF_URL" in fonte
+
+
+def test_refazer_entrada_fecha_os_popups():
+    """O tour e a barra de cookies voltam a cada abertura do portal."""
+    import inspect
+    assert "_fechar_popups_iniciais(page)" in inspect.getsource(
+        login._refazer_entrada_govbr)
+
+
+def test_ja_logado_encerra_sem_reclicar():
+    """Se a sessao voltou sozinha, refazer o caminho e desperdicio."""
+    import inspect
+    fonte = inspect.getsource(login._refazer_entrada_govbr)
+    pos_logado = fonte.index("_ja_logado(page)")
+    pos_click = fonte.index("_clicar_entrar_govbr(page)")
+    assert pos_logado < pos_click
+
+
+def test_a_tentativa_de_certificado_nao_apenas_recarrega():
+    """O `goto` cru sem refazer o caminho foi o defeito. Nao pode voltar."""
+    import inspect
+    fonte = inspect.getsource(login.main)
+    trecho = fonte[fonte.index("botão 'Seu certificado digital' não encontrado"):]
+    trecho = trecho[:2000]
+    assert "_refazer_entrada_govbr(page)" in trecho, (
+        "a tentativa voltou a so recarregar a home")
+
+
+def test_erro_do_sso_e_checado_antes_de_procurar_o_botao():
+    """Procurar o botao dentro de uma tela de 408 reporta 'botao nao
+    encontrado' e manda quem le investigar o seletor — o lugar errado."""
+    import inspect
+    fonte = inspect.getsource(login.main)
+    pos_erro = fonte.index("erro_antes = pagina_de_erro_http(page)")
+    pos_botao = fonte.index("if not _clicar_certificado(page):")
+    assert pos_erro < pos_botao
