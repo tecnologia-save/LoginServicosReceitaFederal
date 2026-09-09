@@ -87,6 +87,28 @@ def _tem_marcas_de_coluna(w) -> bool:
         return False
 
 
+def _descendente_por_titulo(janela):
+    """Procura, em QUALQUER profundidade, um elemento cujo titulo case.
+
+    Sem filtro de `control_type`: o dialogo de certificado do Chrome apareceu
+    com `ClassName=RootView` em 09/09/2026, e filtrar por tipo foi o que fez a
+    busca passar por cima dele.
+
+    Custa uma varredura da arvore, entao roda por ultimo — depois das buscas
+    dirigidas, e so quando elas nao acharam nada.
+    """
+    try:
+        for e in janela.descendants():
+            try:
+                if TITULO_RE.search(e.window_text() or ""):
+                    return e
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
 def _achar_dialogo(timeout: float):
     if not _PYWINAUTO_OK:
         return None
@@ -103,8 +125,20 @@ def _achar_dialogo(timeout: float):
                 try:
                     if w.class_name() != "Chrome_WidgetWin_1":
                         continue
-                    if not w.descendants(title="OK", control_type="Button"):
-                        continue
+                    # A exigencia de um Button "OK" DESCENDENTE saiu daqui.
+                    #
+                    # Ela era pre-condicao: sem achar o botao, nem se olhava o
+                    # titulo. Em 09/09/2026 o dialogo ficou aberto na tela, a
+                    # UIA bruta o encontrou como descendente com
+                    # `ClassName=RootView`, e a automacao esperou parada. O
+                    # botao existe visualmente, mas quem o desenha e o Chrome —
+                    # o tipo que ele expoe na arvore UIA e detalhe de versao, e
+                    # o codigo tratava esse detalhe como requisito.
+                    #
+                    # Pre-condicao que so serve para ECONOMIZAR busca nao pode
+                    # decidir se a busca acontece. O custo dela era o login
+                    # inteiro; a economia era uma varredura de arvore.
+                    #
                     # 1) A janela aninhada, pelo titulo. Criterio principal.
                     interno = _dialogo_dentro(w)
                     if interno is not None:
@@ -113,6 +147,15 @@ def _achar_dialogo(timeout: float):
                     #    para uma arvore UIA diferente da medida.
                     if _tem_marcas_de_coluna(w):
                         return w
+                    # 3) Qualquer DESCENDENTE cujo titulo case, sem exigir tipo.
+                    #
+                    # Foi assim que a UIA bruta achou o dialogo que este codigo
+                    # nao achava: ele nao e janela de topo nem filho direto —
+                    # esta aninhado, e o tipo de controle varia. Titulo e a
+                    # unica coisa que se manteve estavel entre as versoes.
+                    aninhado = _descendente_por_titulo(w)
+                    if aninhado is not None:
+                        return aninhado
                 except Exception:
                     pass
         except Exception:
