@@ -1902,6 +1902,29 @@ def main(
                     print(f"  -> Página de erro do SSO (HTTP {erro_sso}) — "
                           "não adianta esperar.")
                     break
+
+                # A tarja de dispositivos aparece AQUI, e não só na home.
+                #
+                # Medido em 09/09/2026, run 454a82dc: a checagem na primeira
+                # navegação passou limpa, o gov.br e o certificado seguiram, e a
+                # tarja surgiu no retorno — com a automação contando "(18s)
+                # aguardando redirecionamento" contra uma tela que já tinha
+                # respondido não. Sessenta segundos por tentativa, três
+                # tentativas, e no fim um erro genérico de redirecionamento que
+                # não menciona dispositivo nenhum.
+                #
+                # A cada 3s, e não a cada 1s: `inner_text("body")` não é de
+                # graça, e a tarja não some sozinha — atrasar a deteção em dois
+                # segundos não custa nada perto dos 180 que ela evita.
+                if _seg % 3 == 0 and _limite_de_dispositivos(page):
+                    print("  -> gov.br: limite de dispositivos conectados no "
+                          "retorno do certificado. Encerrando.")
+                    _abortar(p, context)
+                    raise LimiteDeDispositivosGovBr(
+                        "gov.br recusou: número máximo de dispositivos "
+                        "conectados simultaneamente com esta conta. Desconecte "
+                        "um dispositivo em acesso.gov.br (Meus dispositivos "
+                        "conectados) ou aguarde as sessões antigas expirarem.")
                 time.sleep(1)
             else:
                 print("  -> Timeout aguardando o portal autenticado.")
