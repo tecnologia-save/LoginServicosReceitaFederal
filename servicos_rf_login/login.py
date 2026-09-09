@@ -510,7 +510,28 @@ def _clicar_entrar_govbr(page) -> bool:
 # de 120 s cada o pior caso passaria de seis minutos. O que cada tentativa recebe
 # é o que SOBROU.
 TIMEOUT_GEMINI_LOGIN_MS = 20_000
-DEADLINE_CAPTCHA_LOGIN_S = 120.0
+# 09/09/2026: os orcamentos TOTAIS subiram junto com os tetos por chamada.
+#
+# Aumentar o teto por chamada sem aumentar o total nao adianta nada: o
+# `timeout_efetivo_ms()` e `min(teto, restante)`, entao o total corta antes e o
+# teto vira enfeite. Era o caso do captcha da representacao, com teto de 40s
+# dentro de um orcamento de 25s.
+#
+# O que justifica a folga: dos 30 erros do Gemini medidos no dia, 26 eram teto
+# NOSSO — 9 `504 DEADLINE_EXCEEDED` ("o prazo que voce me deu expirou"), 12
+# `ReadTimeout` e 5 `400` por prazo abaixo do minimo. Apertar o relogio nao
+# economizava tempo: gerava falha, e falha custa a rodada inteira.
+#
+# Decisao do Jean, explicita: "foda-se o orcamento". Vale onde nao ha teto
+# fisico — o login subiu de 120s para 300s sem cerimonia.
+#
+# Na REPRESENTACAO ha teto, e ele e medido: a representacao confirmada mais
+# demorada ja observada levou 70,3s depois do clique em Representar
+# (`MAIOR_REPRESENTACAO_CONFIRMADA_S`, em tests/). Orcamento maior que isso nao
+# compra chance nenhuma — gasta tempo num desafio que o portal ja abandonou. Os
+# valores daqui ficam com folga de 10s abaixo dele, que e a guarda que a suite
+# ja cobrava e me impediu de exagerar.
+DEADLINE_CAPTCHA_LOGIN_S = 300.0
 
 
 def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
@@ -820,7 +841,7 @@ COOLDOWN_ERRO_REPRESENTACAO_S = 31.0
 # aqui: numa execução real dois timeouts consecutivos consumiram mais de um
 # minuto, e o portal recusou a representação em seguida.
 TIMEOUT_GEMINI_REPRESENTACAO_MS = 10_000
-DEADLINE_CAPTCHA_REPRESENTACAO_S = 25.0
+DEADLINE_CAPTCHA_REPRESENTACAO_S = 55.0
 
 # Orçamento da BOLA, separado — e MEDIDO, ao contrário do de cima.
 #
@@ -961,7 +982,7 @@ DEADLINE_CAPTCHA_BOLA_S = 58.0
 # Teto superior continua sendo o do portal: 70,3 s é a maior representação
 # CONFIRMADA no histórico. 45 s ficam 25 s abaixo.
 TIMEOUT_GEMINI_IMAGEM_MS = 12_000
-DEADLINE_CAPTCHA_IMAGEM_S = 45.0
+DEADLINE_CAPTCHA_IMAGEM_S = 58.0
 
 
 # TETO DURO, alcançável só com progresso comprovado.

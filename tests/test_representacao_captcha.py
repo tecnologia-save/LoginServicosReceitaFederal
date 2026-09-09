@@ -542,10 +542,23 @@ def test_tipo_sem_orcamento_proprio_usa_o_padrao():
             login.DEADLINE_CAPTCHA_REPRESENTACAO_S), tipo
 
 
-def test_orcamento_maior_vale_SO_para_a_bola():
-    """A grade 3x3 roda todo dia e nao herda nada da folga da animacao."""
-    assert login._orcamento_do_captcha(TIPO_GRADE) == (10_000, 25.0)
-    assert login.DEADLINE_CAPTCHA_REPRESENTACAO_S == 25.0
+def test_a_grade_tem_orcamento_que_cabe_o_teto_por_chamada():
+    """Os 25s da grade viraram 55s em 09/09/2026, e nao por generosidade.
+
+    O teto por chamada do resolvedor subiu para 40s naquele dia, depois de os
+    arquivos mostrarem que 26 dos 30 erros do Gemini eram teto NOSSO: nove
+    `504 DEADLINE_EXCEEDED` — o servidor dizendo que o prazo QUE NOS DEMOS
+    expirou —, doze `ReadTimeout` e cinco `400` por prazo abaixo do minimo.
+
+    Teto por chamada dentro de um orcamento menor que ele e enfeite:
+    `timeout_efetivo_ms()` e `min(teto, restante)`, entao o total cortava antes
+    e o numero maior nunca chegava a valer. Era o caso de 40s dentro de 25s.
+
+    O limite de cima continua sendo o do portal, e o teste acima o cobra.
+    """
+    _teto, orcamento = login._orcamento_do_captcha(TIPO_GRADE)
+    assert orcamento == login.DEADLINE_CAPTCHA_REPRESENTACAO_S
+    assert orcamento >= 40.0, "menor que o teto por chamada torna o teto enfeite"
 
 
 # ── Politica de certificado: DESCOBRIR, nao assumir ─────────────────────────
