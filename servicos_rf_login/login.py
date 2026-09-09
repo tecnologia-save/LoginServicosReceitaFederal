@@ -437,6 +437,27 @@ def _clicar_certificado(page) -> bool:
     return False
 
 
+_MARCAS_LIMITE_DISPOSITIVOS = (
+    "numero maximo de dispositivos",
+    "número máximo de dispositivos",
+    "dispositivos conectados simultaneamente",
+)
+
+
+def _limite_de_dispositivos(page) -> bool:
+    """A tarja de limite de dispositivos esta na tela?
+
+    Casa por TRECHO e sem acento obrigatorio: a frase ja apareceu com e sem
+    acentuacao dependendo de onde e renderizada, e comparar a frase inteira
+    quebraria na primeira virgula que o gov.br mudasse.
+    """
+    try:
+        texto = (page.inner_text("body", timeout=3_000) or "").lower()
+    except Exception:  # noqa: BLE001 — pagina instavel nao afirma nada
+        return False
+    return any(m in texto for m in _MARCAS_LIMITE_DISPOSITIVOS)
+
+
 def _clicar_entrar_govbr(page) -> bool:
     """Clica em "Entrar com gov.br" tentando os seletores em ordem.
 
@@ -999,6 +1020,27 @@ PERFIL_AUSENTE = "ausente"
 CONTINUAR = "continuar"
 CANCELAR = "cancelar"
 EXPIRADO = "expirado"
+
+
+class LimiteDeDispositivosGovBr(RuntimeError):
+    """O gov.br recusou a conta por excesso de dispositivos conectados.
+
+    A tarja aparece no topo do portal, ANTES de qualquer autenticacao:
+
+        "Voce atingiu o numero maximo de dispositivos conectados
+         simultaneamente com esta conta. Saia da sua conta em um dos
+         dispositivos para entrar por aqui."
+
+    Nao adianta insistir. Nao e captcha, nao e lentidao, nao e certificado: a
+    conta esta bloqueada para novas sessoes ate alguem desconectar um
+    dispositivo em acesso.gov.br, ou ate as sessoes antigas expirarem sozinhas
+    (~30 min). Toda tentativa nesse intervalo morre no mesmo lugar, e cada uma
+    delas ainda consome um desafio de captcha e o orcamento inteiro do login.
+
+    Por isso encerra na hora, com motivo proprio: uma empresa marcada assim e
+    reprocessavel mais tarde sem trabalho manual, enquanto "falhou no login"
+    exigiria alguem abrir o log para descobrir que a causa nem estava aqui.
+    """
 
 
 class FalhaDoResolvedorCaptcha(RuntimeError):
@@ -1680,6 +1722,20 @@ def main(
 
         # Fecha popups que aparecem ao abrir o portal (cookies + tour de boas-vindas)
         _fechar_popups_iniciais(page)
+
+        # ANTES de gastar captcha: a tarja de limite de dispositivos aparece
+        # ja na primeira tela, e nenhuma tentativa passa enquanto ela estiver
+        # ali. Seguir daqui custaria um desafio de captcha e o orcamento do
+        # login inteiro para terminar no mesmo lugar.
+        if _limite_de_dispositivos(page):
+            print("  -> gov.br: limite de dispositivos conectados. Encerrando "
+                  "sem tentar autenticar.")
+            _abortar(p, context)
+            raise LimiteDeDispositivosGovBr(
+                "gov.br recusou: número máximo de dispositivos conectados "
+                "simultaneamente com esta conta. Desconecte um dispositivo em "
+                "acesso.gov.br (Meus dispositivos conectados) ou aguarde as "
+                "sessões antigas expirarem.")
 
         if _ja_logado(page):
             print("  -> Redirecionado automaticamente. Login concluído.")
