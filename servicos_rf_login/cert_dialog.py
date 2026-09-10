@@ -302,9 +302,38 @@ def selecionar_certificado_no_dialogo(cn: str = "", serial: str = "",
         return False
     print(f"[cert-dialog] Janela encontrada: '{dlg.window_text()}'")
 
-    time.sleep(0.8)
-    elems = _coletar_elementos(dlg)
-    print(f"[cert-dialog] {len(elems)} elemento(s) com texto no dialogo.")
+    # Insiste ate os filhos existirem, em vez de uma espera fixa e uma leitura.
+    #
+    # Era `time.sleep(0.8)` seguido de UMA coleta. A janela aparece antes de a
+    # UIA expor o conteudo dela, e nesse intervalo a coleta devolve zero — que
+    # e indistinguivel de "dialogo sem o nosso certificado". Desistiamos ali,
+    # com 90s de orcamento intactos.
+    #
+    # Medido em 10/09/2026, RUN-1e369205, C. CARVALHO GENEROSO:
+    #
+    #     [cert-dialog] Janela encontrada: 'Selecione um certificado'
+    #     [cert-dialog] 0 elemento(s) com texto no dialogo.
+    #     [cert-dialog] Nenhum elemento casou. Dump dos textos do dialogo:
+    #
+    # O dump saiu vazio — nao havia o que casar porque nao havia o que ler
+    # ainda. Sem o certificado escolhido a autenticacao TLS falha, o Chrome
+    # mostra a pagina de erro (`host=chromewebdata`) e o login gasta mais 60s
+    # perguntando a um erro de rede se ele ja virou portal. Foi assim que essa
+    # empresa falhou duas vezes seguidas, com erro diferente a cada vez —
+    # sintomas distintos da mesma causa.
+    #
+    # Zero elemento nao e resposta: e a pergunta feita cedo demais.
+    limite = time.monotonic() + max(3.0, min(15.0, timeout / 4.0))
+    elems = []
+    tentativas = 0
+    while time.monotonic() < limite:
+        tentativas += 1
+        elems = _coletar_elementos(dlg)
+        if elems:
+            break
+        time.sleep(0.3)
+    print(f"[cert-dialog] {len(elems)} elemento(s) com texto no dialogo "
+          f"(apos {tentativas} leitura(s)).")
 
     escolhido = None
     if alvo_serial:

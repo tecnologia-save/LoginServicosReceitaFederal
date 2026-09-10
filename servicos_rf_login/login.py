@@ -2076,6 +2076,31 @@ def main(
                           "não adianta esperar.")
                     break
 
+                # `chromewebdata` é a página de erro DO CHROME, não do SSO.
+                #
+                # `pagina_de_erro_http` lê o título que o servidor devolveu, e
+                # aqui não houve resposta nenhuma: a navegação morreu na rede
+                # ou no handshake TLS. Nenhum seletor do portal vai aparecer,
+                # nunca — esperar é esperar por nada.
+                #
+                # Medido em 10/09/2026, RUN-1e369205, C. CARVALHO GENEROSO: o
+                # diálogo do certificado não foi lido a tempo, o certificado
+                # nunca foi apresentado, e o handshake caiu. O host aparecia em
+                # TODAS as sessenta linhas do laço, e nada olhava para ele:
+                #
+                #     -> (1s) aguardando redirecionamento | host=chromewebdata
+                #     ... sessenta vezes ...
+                #     -> Timeout aguardando o portal autenticado.
+                #
+                # Sai com motivo, e não com `break` seco, para não cair no
+                # caminho de sucesso anunciando login concluído contra uma tela
+                # de erro — a mesma razão que o `erro_sso` acima já documenta.
+                if host_da_url(page.url) == "chromewebdata":
+                    erro_sso = "erro de rede do Chrome (certificado não apresentado?)"
+                    print("  -> Página de erro do Chrome — a navegação nem "
+                          "chegou ao servidor. Não adianta esperar.")
+                    break
+
                 # A tarja de dispositivos aparece AQUI, e não só na home.
                 #
                 # Medido em 09/09/2026, run 454a82dc: a checagem na primeira
