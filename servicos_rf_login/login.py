@@ -831,6 +831,22 @@ SEL_MENSAGEM_ERRO_REPRESENTACAO = ".mensagemErro"
 # Uma tentativa é a OPERAÇÃO inteira: formulário, envio, desfecho e captcha.
 MAX_TENTATIVAS_REPRESENTACAO = 3
 
+# Quantas RECUSAS bastam para desistir, sem gastar as três tentativas.
+#
+# Recusa não é ausência de resposta: o portal respondeu, e respondeu não. As
+# três tentativas existem para o caso de ele NÃO responder — outra coisa, com
+# outro motivo. Duas recusas seguidas indicam que a resposta é a resposta, e a
+# terceira paga mais 31 s de intervalo e mais um captcha para ouvir de novo.
+#
+# Duas, e não uma, porque não há medição dizendo que recusa nunca é transitória.
+# Enquanto não houver, a segunda tentativa é o preço de não decidir por dedução.
+# Se um dia se medir que a primeira recusa nunca reverte, isto vira 1.
+#
+# O critério é a CONTAGEM, e não o texto da mensagem: `_erro_representacao_visivel`
+# não lê a frase de propósito — ela muda com o tempo e pode carregar informação
+# de quem se tenta representar. Contar recusas respeita essa decisão.
+RECUSAS_PARA_DESISTIR = 2
+
 # O portal pediu "pelo menos 30 segundos". Margem mínima e determinística: não
 # há jitter nem randomização — isto é respeito ao throttle observado, não
 # técnica para parecer outra coisa.
@@ -1592,6 +1608,10 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
                 if not recusou:
                     recusas += 1
                     recusou = True
+                if recusas >= RECUSAS_PARA_DESISTIR:
+                    print(f"[cnpj] Portal recusou {recusas} vezes — a resposta "
+                          "é a resposta. Não há terceira tentativa.")
+                    break
                 print("[cnpj] Portal recusou a tentativa; aguardando intervalo "
                       "antes de repetir.")
             else:
@@ -1615,9 +1635,9 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
             break
         _restaurar_formulario(page)
 
-    if recusas == MAX_TENTATIVAS_REPRESENTACAO:
+    if recusas >= RECUSAS_PARA_DESISTIR:
         raise RepresentacaoRejeitadaPeloPortal(
-            "o portal recusou a representacao em todas as tentativas.")
+            f"o portal recusou a representacao {recusas} vez(es).")
     raise RepresentacaoNaoConfirmada(
         "o portal nao confirmou a representacao do perfil.")
 
