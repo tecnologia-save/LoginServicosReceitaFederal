@@ -279,6 +279,26 @@ def _clicar_ok(dlg) -> bool:
     return False
 
 
+def _mascarar(texto: str, limite: int = 70) -> str:
+    """O texto da linha do certificado, com os digitos trocados por `#`.
+
+    O nome da empresa e o que responde "qual certificado foi escolhido"; os
+    digitos ao lado sao CNPJ e numero de serie, e nao acrescentam nada a essa
+    pergunta. Mascarar deixa o log util e sem dado de terceiro.
+
+    Existe porque o log dizia apenas "Match por SERIAL", sem dizer em QUE. Em
+    10/09/2026 a automacao entrou com o certificado errado — o dialogo tinha
+    dois, Save Inteligencia em primeiro e D&S em segundo, e ela confirmou o
+    primeiro. Depois de corrigido, continuava impossivel CONFERIR pelo log: so
+    olhando a tela no instante do clique, que dura menos de um segundo.
+
+    O caminho de FALHA ja despejava os textos todos. O de sucesso, que e onde
+    a conferencia importa, nao dizia nada.
+    """
+    import re as _re
+    return _re.sub(r"\d", "#", (texto or "").strip())[:limite]
+
+
 def selecionar_certificado_no_dialogo(cn: str = "", serial: str = "",
                                       timeout: float = 30.0,
                                       perfil: str = "") -> bool:
@@ -340,13 +360,15 @@ def selecionar_certificado_no_dialogo(cn: str = "", serial: str = "",
         for e, txt in elems:
             if alvo_serial in txt:
                 escolhido = e
-                print("[cert-dialog] Match por SERIAL.")
+                print(f"[cert-dialog] Match por SERIAL em {_mascarar(txt)}"
+                      f" ({len(elems)} candidato(s) no dialogo).")
                 break
     if escolhido is None and alvo_cn:
         for e, txt in elems:
             if alvo_cn in txt:
                 escolhido = e
-                print("[cert-dialog] Match por CN.")
+                print(f"[cert-dialog] Match por CN em {_mascarar(txt)}"
+                      f" ({len(elems)} candidato(s) no dialogo).")
                 break
 
     if escolhido is None:
