@@ -1166,17 +1166,66 @@ def _tipo_do_desafio(page) -> str:
         return TIPO_NENHUM
 
 
+# Pausa curta e VARIAVEL entre acoes do formulario.
+#
+# O que denuncia nao e a velocidade — e a REGULARIDADE. Uma pessoa hesita, e
+# hesita diferente a cada vez; um robo faz tudo no mesmo intervalo, ou em
+# intervalo nenhum. Ate 10/09/2026 este formulario era preenchido inteiro em
+# milissegundos: o avatar abria, o CNPJ de 14 digitos aparecia de uma vez, e
+# tres cliques saiam em sequencia sem respiro.
+#
+# A conta foi bloqueada por atividade automatizada duas vezes naquele dia, com
+# login manual passando liso na MESMA maquina e no MESMO IP — o que descarta
+# conta, maquina e endereco, e deixa comportamento.
+#
+# Curto de proposito. Em 09/09/2026 eu tinha acabado de cortar 3min30s de
+# espera morta por empresa, e devolver aquilo seria trocar um problema por
+# outro. O orcamento aqui e de poucos segundos por empresa, e ele compra
+# variacao, nao lentidao.
+_PAUSA_MIN_S = 0.35
+_PAUSA_MAX_S = 1.10
+_TECLA_MIN_MS = 55
+_TECLA_MAX_MS = 130
+
+
+def _pausa_humana(minimo: float = _PAUSA_MIN_S, maximo: float = _PAUSA_MAX_S) -> None:
+    """Hesitacao antes da proxima acao, com duracao sorteada."""
+    import random
+    time.sleep(random.uniform(minimo, maximo))
+
+
+def _digitar_humano(campo, texto: str) -> None:
+    """Uma tecla por vez, com intervalo sorteado entre elas.
+
+    `fill()` injeta o valor inteiro num evento so — um CNPJ de 14 digitos
+    aparece instantaneamente, o que nenhum teclado produz. `press_sequentially`
+    emite os eventos de teclado de verdade, e o `delay` sorteado por caractere
+    evita a cadencia perfeita, que e tao artificial quanto a instantanea.
+    """
+    import random
+    try:
+        campo.press_sequentially(
+            texto, delay=random.randint(_TECLA_MIN_MS, _TECLA_MAX_MS))
+    except Exception:  # noqa: BLE001
+        # Versao antiga da API, ou campo que recusa digitacao: preencher e
+        # melhor do que falhar a representacao inteira por causa da cadencia.
+        campo.fill(texto)
+
+
 def _preencher_formulario_representacao(page, cnpj: str) -> None:
     """Abre o avatar, preenche o identificador, escolhe Procurador e envia."""
     print("[cnpj] Clicando no avatar...")
     avatar = page.locator('#avatar-dropdown-trigger').first
     avatar.wait_for(state="visible", timeout=20_000)
     avatar.click()
+    _pausa_humana()
 
     print("[cnpj] Preenchendo identificador do perfil PJ...")
     campo = page.locator('#input-representar-cpfcnpj').first
     campo.wait_for(state="visible", timeout=10_000)
-    campo.fill(cnpj)
+    campo.click()
+    _digitar_humano(campo, cnpj)
+    _pausa_humana()
 
     print("[cnpj] Selecionando Procurador...")
     ng_select = page.locator(
@@ -1185,10 +1234,14 @@ def _preencher_formulario_representacao(page, cnpj: str) -> None:
     ).first
     ng_select.wait_for(state="visible", timeout=10_000)
     ng_select.click()
+    _pausa_humana()
 
     opcao = page.get_by_role("option", name="Procurador").first
     opcao.wait_for(state="visible", timeout=5_000)
     opcao.click()
+    # Antes de ENVIAR a pausa e um pouco maior: e o ponto em que uma pessoa
+    # confere o que digitou.
+    _pausa_humana(0.6, 1.6)
 
     print("[cnpj] Clicando em Representar...")
     btn = page.locator(
