@@ -347,57 +347,58 @@ def selecionar_certificado_no_dialogo(cn: str = "", serial: str = "",
         return False
     print(f"[cert-dialog] Janela encontrada: '{dlg.window_text()}'")
 
-    # Insiste ate os filhos existirem, em vez de uma espera fixa e uma leitura.
+    # Insiste ate achar O ALVO — nao ate "haver elementos".
     #
-    # Era `time.sleep(0.8)` seguido de UMA coleta. A janela aparece antes de a
-    # UIA expor o conteudo dela, e nesse intervalo a coleta devolve zero — que
-    # e indistinguivel de "dialogo sem o nosso certificado". Desistiamos ali,
-    # com 90s de orcamento intactos.
+    # Primeira versao: `time.sleep(0.8)` e UMA coleta. Corrigi para insistir
+    # enquanto a coleta viesse vazia, e ficou errado do mesmo jeito, porque o
+    # dialogo NUNCA vem vazio: o titulo e o botao Fechar existem desde o
+    # primeiro instante. Medido em 10/09/2026, RUN-a937c982:
     #
-    # Medido em 10/09/2026, RUN-1e369205, C. CARVALHO GENEROSO:
-    #
-    #     [cert-dialog] Janela encontrada: 'Selecione um certificado'
-    #     [cert-dialog] 0 elemento(s) com texto no dialogo.
+    #     [cert-dialog] 2 elemento(s) com texto no dialogo (apos 1 leitura(s)).
     #     [cert-dialog] Nenhum elemento casou. Dump dos textos do dialogo:
+    #       [el 0] SELECIONEUMCERTIFICADO
+    #       [el 1] FECHAR
     #
-    # O dump saiu vazio — nao havia o que casar porque nao havia o que ler
-    # ainda. Sem o certificado escolhido a autenticacao TLS falha, o Chrome
-    # mostra a pagina de erro (`host=chromewebdata`) e o login gasta mais 60s
-    # perguntando a um erro de rede se ele ja virou portal. Foi assim que essa
-    # empresa falhou duas vezes seguidas, com erro diferente a cada vez —
-    # sintomas distintos da mesma causa.
+    # Dois elementos bastavam para `if elems: break`, e a espera terminava
+    # antes de as LINHAS carregarem. A instrumentacao "(apos 1 leitura(s))",
+    # que eu tinha posto para outra duvida, foi o que denunciou.
     #
-    # Zero elemento nao e resposta: e a pergunta feita cedo demais.
+    # A condicao certa e o alvo: enquanto ele nao aparecer, continua olhando.
+    # Assim "2 elementos" e "40 elementos sem o nosso" deixam de ser a mesma
+    # coisa — o primeiro e cedo demais, o segundo e certificado ausente.
     limite = time.monotonic() + max(3.0, min(15.0, timeout / 4.0))
     elems = []
-    tentativas = 0
-    while time.monotonic() < limite:
-        tentativas += 1
+    escolhido = None
+    leituras = 0
+    while True:
+        leituras += 1
         elems = _coletar_elementos(dlg)
-        if elems:
+
+        if alvo_serial:
+            for e, txt in elems:
+                if alvo_serial in txt:
+                    escolhido = e
+                    print(f"[cert-dialog] Match por SERIAL em {_mascarar(txt)}"
+                          f" ({len(elems)} candidato(s) no dialogo,"
+                          f" {leituras} leitura(s)).")
+                    break
+        if escolhido is None and alvo_cn:
+            for e, txt in elems:
+                if alvo_cn in txt:
+                    escolhido = e
+                    print(f"[cert-dialog] Match por CN em {_mascarar(txt)}"
+                          f" ({len(elems)} candidato(s) no dialogo,"
+                          f" {leituras} leitura(s)).")
+                    break
+
+        if escolhido is not None or time.monotonic() >= limite:
             break
         time.sleep(0.3)
-    print(f"[cert-dialog] {len(elems)} elemento(s) com texto no dialogo "
-          f"(apos {tentativas} leitura(s)).")
-
-    escolhido = None
-    if alvo_serial:
-        for e, txt in elems:
-            if alvo_serial in txt:
-                escolhido = e
-                print(f"[cert-dialog] Match por SERIAL em {_mascarar(txt)}"
-                      f" ({len(elems)} candidato(s) no dialogo).")
-                break
-    if escolhido is None and alvo_cn:
-        for e, txt in elems:
-            if alvo_cn in txt:
-                escolhido = e
-                print(f"[cert-dialog] Match por CN em {_mascarar(txt)}"
-                      f" ({len(elems)} candidato(s) no dialogo).")
-                break
 
     if escolhido is None:
-        print("[cert-dialog] Nenhum elemento casou. Dump dos textos do dialogo:")
+        print(f"[cert-dialog] {len(elems)} elemento(s) com texto no dialogo "
+              f"(apos {leituras} leitura(s)), nenhum com o alvo. "
+              "Dump dos textos do dialogo:")
         for i, (_, txt) in enumerate(elems):
             print(f"  [el {i}] {txt[:80]}")
         return False

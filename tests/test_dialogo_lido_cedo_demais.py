@@ -4,28 +4,38 @@ import inspect
 from servicos_rf_login import cert_dialog, login
 
 
-def test_a_coleta_insiste_ate_haver_o_que_ler():
-    """Era `sleep(0.8)` e UMA leitura, com 90s de orçamento na mão.
+def test_a_espera_e_PELO_ALVO_e_nao_por_haver_elementos():
+    """PREMISSA REVISADA — segunda vez no mesmo ponto, no mesmo dia.
 
-    A janela do diálogo aparece antes de a UIA expor o conteúdo dela. Nesse
-    intervalo a coleta devolve zero — indistinguível de "o diálogo não tem o
-    nosso certificado", que é a conclusão oposta e leva a investigação para o
-    lado errado.
+    Versão 1: `time.sleep(0.8)` e UMA coleta. Zero elementos era tratado como
+    "o diálogo não tem o nosso certificado", que é a conclusão oposta.
 
-    Medido em 10/09/2026, RUN-1e369205, C. CARVALHO GENEROSO:
+    Versão 2 (minha correção): insistir enquanto a coleta viesse vazia. Errada
+    do mesmo jeito, porque o diálogo NUNCA vem vazio — o título e o botão
+    Fechar existem desde o primeiro instante. Medido na RUN-a937c982:
 
-        [cert-dialog] Janela encontrada: 'Selecione um certificado'
-        [cert-dialog] 0 elemento(s) com texto no dialogo.
+        [cert-dialog] 2 elemento(s) com texto no dialogo (apos 1 leitura(s)).
         [cert-dialog] Nenhum elemento casou. Dump dos textos do dialogo:
+          [el 0] SELECIONEUMCERTIFICADO
+          [el 1] FECHAR
 
-    O dump saiu vazio. Sem certificado escolhido o handshake TLS cai, e a
-    empresa falhou duas vezes seguidas com erro DIFERENTE a cada vez —
-    sintomas distintos da mesma causa, que foi o que me fez tratar como azar.
+    Dois elementos bastavam para `if elems: break`, e a espera terminava antes
+    de as LINHAS carregarem. Quem denunciou foi a instrumentação "(apos 1
+    leitura(s))", que eu tinha posto para outra dúvida.
+
+    A condição certa é o ALVO. Assim "2 elementos" (cedo demais) e "40
+    elementos sem o nosso" (certificado ausente) deixam de ser a mesma coisa —
+    e elas pedem correções opostas.
     """
     fonte = inspect.getsource(cert_dialog.selecionar_certificado_no_dialogo)
-    assert "while time.monotonic() < limite" in fonte
-    assert "if elems:" in fonte
-    assert "time.sleep(0.8)\n    elems" not in fonte
+    assert "if escolhido is not None or time.monotonic() >= limite:" in fonte, (
+        "o laço termina quando acha o alvo, não quando há elementos")
+    assert "if elems:" + chr(10) + "            break" not in fonte, (
+        "condição antiga: qualquer elemento encerrava a espera")
+    # O match acontece DENTRO do laço — senão não adianta insistir.
+    i = fonte.index("while True:")
+    j = fonte.index("if escolhido is not None or time.monotonic()")
+    assert "alvo_serial in txt" in fonte[i:j]
 
 
 def test_a_contagem_de_leituras_vai_no_log():
