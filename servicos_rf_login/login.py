@@ -661,12 +661,42 @@ def pagina_de_erro_http(page) -> str:
         titulo = (page.title() or "").lower()
     except Exception:  # noqa: BLE001
         return ""
-    if not titulo or len(titulo) > 120:
-        # Página de erro do servidor tem título curto. Portal de verdade tem
-        # título longo e cheio de marca — não vale a pena inspecionar o corpo.
+
+    if titulo and len(titulo) <= 120:
+        for codigo, *marcas in _ERROS_HTTP_DO_SSO:
+            if codigo in titulo or any(m in titulo for m in marcas):
+                return codigo
+
+    # SEM título: o corpo decide, e só nesse caso.
+    #
+    # Página sem `<title>` faz o Chrome usar a URL como nome da aba, e
+    # `page.title()` volta vazia. Era descartado aqui mesmo, antes de olhar
+    # qualquer coisa — e "404" e "not found" já estavam na lista de marcas há
+    # semanas, sem nunca terem chance de casar.
+    #
+    # Capturado em print pelo Jean em 10/09/2026, run 90ef18c4, DURANTE o
+    # login: `servicos.receitafederal.gov.br/home` respondendo
+    #
+    #     404 Not Found
+    #     The requested URL was not found.
+    #
+    # com a aba nomeada pela URL. Este `/home` nao e nosso — `SERVICOS_RF_URL`
+    # termina em `/`; e o proprio portal que redireciona para la depois do
+    # certificado, e a rota nao existe. Sem deteccao, o laco gastava os 60s.
+    #
+    # O limite de tamanho e o que torna a inspecao segura: pagina de erro crua
+    # tem duas linhas. Portal de verdade tem menus, rodape e marca — nao passa
+    # nem perto. E continua saindo so o CODIGO, nunca o corpo.
+    if titulo:
+        return ""
+    try:
+        corpo = (page.inner_text("body", timeout=2_000) or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    if len(corpo) > 300:
         return ""
     for codigo, *marcas in _ERROS_HTTP_DO_SSO:
-        if codigo in titulo or any(m in titulo for m in marcas):
+        if codigo in corpo or any(m in corpo for m in marcas):
             return codigo
     return ""
 
