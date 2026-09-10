@@ -671,6 +671,41 @@ def pagina_de_erro_http(page) -> str:
     return ""
 
 
+def sessao_derrubada_pelo_portal(page) -> str:
+    """O portal descartou a sessao do certificado e disse o codigo. Ou "".
+
+    Le a URL, nao a pagina. Quando o certificado nao e apresentado, o portal
+    manda o navegador para
+
+        servicos.receitafederal.gov.br/?logoutCertificadoDigital=1&codErro=30002
+
+    e essa URL nao existe — a tela e um "404 Not Found" cru. `pagina_de_erro_http`
+    nao pega: ela le o TITULO procurando erro do SSO, e aqui o host e o certo e
+    o titulo e generico. Resultado: o laco de redirecionamento gastava os 60s
+    perguntando a um 404 se ele ja virou portal.
+
+    Capturado em print pelo Jean em 10/09/2026, run aa762acf, com
+    `[cert-dialog] Janela nao apareceu.` quarenta linhas acima — o dialogo do
+    certificado nunca abriu, entao nao havia o que apresentar.
+
+    Recarregar nao resolve: a URL 404 continua 404. O que resolve e refazer a
+    entrada pelo gov.br, que e o que a tentativa seguinte do laco do
+    certificado ja faz — ela so precisava ser alcancada sessenta segundos
+    antes.
+
+    So o CODIGO sai daqui, pelo mesmo motivo de `pagina_de_erro_http`: a query
+    string carrega identificadores do fluxo OAuth.
+    """
+    try:
+        url = page.url or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    if "logoutcertificadodigital" not in url.lower():
+        return ""
+    achado = re.search(r"codErro=(\w{1,12})", url, re.I)
+    return achado.group(1) if achado else "sem-codigo"
+
+
 def _acesso_bloqueado(page) -> bool:
     """Detecta a mensagem de bloqueio por comportamento automatizado."""
     try:
@@ -2164,6 +2199,17 @@ def main(
                 # Sai com motivo, e não com `break` seco, para não cair no
                 # caminho de sucesso anunciando login concluído contra uma tela
                 # de erro — a mesma razão que o `erro_sso` acima já documenta.
+                # O portal derrubou a sessao do certificado e mandou o
+                # navegador para uma URL que nao existe. Ver
+                # `sessao_derrubada_pelo_portal`.
+                derrubada = sessao_derrubada_pelo_portal(page)
+                if derrubada:
+                    erro_sso = f"portal descartou a sessao do certificado (codErro={derrubada})"
+                    print(f"  -> Portal derrubou a sessao do certificado "
+                          f"(codErro={derrubada}) e a URL de retorno e 404. "
+                          "Refazendo a entrada em vez de esperar.")
+                    break
+
                 if host_da_url(page.url) == "chromewebdata":
                     erro_sso = "erro de rede do Chrome (certificado não apresentado?)"
                     print("  -> Página de erro do Chrome — a navegação nem "
