@@ -87,12 +87,33 @@ def _tem_marcas_de_coluna(w) -> bool:
         return False
 
 
-def _descendente_por_titulo(janela):
-    """Procura, em QUALQUER profundidade, um elemento cujo titulo case.
+# Titulos de janela que podem hospedar o dialogo de certificado.
+#
+# `Chrome_WidgetWin_1` nao distingue nada: VS Code, Brave e o Chrome da
+# automacao usam a mesma classe, porque todos sao Chromium. Em 09/09/2026 a
+# janela do VS Code — com este arquivo aberto, contendo a frase que se procura —
+# casou na busca ampla e vinha ANTES do Chrome na enumeracao.
+_JANELA_HOSPEDEIRA_RE = __import__("re").compile(
+    r"gov\.br|receita|acesso\.gov|Google Chrome", __import__("re").I)
 
-    Sem filtro de `control_type`: o dialogo de certificado do Chrome apareceu
-    com `ClassName=RootView` em 09/09/2026, e filtrar por tipo foi o que fez a
+
+def _descendente_por_titulo(janela):
+    """Procura, em QUALQUER profundidade, um elemento cujo titulo case E que
+    pareca mesmo a lista de certificados.
+
+    Sem filtro de `control_type`: o dialogo do Chrome apareceu com
+    `ClassName=RootView` em 09/09/2026, e filtrar por tipo foi o que fez a
     busca passar por cima dele.
+
+    Mas titulo sozinho NAO basta, e isso quase passou despercebido: na mesma
+    maquina, a janela do VS Code casou — o codigo-fonte aberto na tela contem a
+    frase que se procura, e ela vem ANTES do Chrome na enumeracao. Um editor
+    com este arquivo aberto viraria "dialogo de certificado", e o clique
+    seguinte iria para o lugar errado.
+
+    Por isso todo candidato passa por `_tem_marcas_de_coluna`: o dialogo de
+    verdade tem as colunas Assunto/Emissor/Serial. Texto que so MENCIONA
+    certificado nao tem.
 
     Custa uma varredura da arvore, entao roda por ultimo — depois das buscas
     dirigidas, e so quando elas nao acharam nada.
@@ -100,7 +121,9 @@ def _descendente_por_titulo(janela):
     try:
         for e in janela.descendants():
             try:
-                if TITULO_RE.search(e.window_text() or ""):
+                if not TITULO_RE.search(e.window_text() or ""):
+                    continue
+                if _tem_marcas_de_coluna(e):
                     return e
             except Exception:
                 continue
@@ -109,13 +132,63 @@ def _descendente_por_titulo(janela):
     return None
 
 
-def _achar_dialogo(timeout: float):
+def _pids_do_perfil(perfil: str) -> set:
+    """PIDs do Chrome lancado com ESTE diretorio de perfil.
+
+    Escopo por PROCESSO, e nao por titulo de janela. Em 10/09/2026 a busca por
+    titulo casou com a JANELA DO CHAT em que este problema estava sendo
+    discutido — o log registrou:
+
+        [cert-dialog] Janela encontrada: 'Cara, o que ta faltando, na moral?'
+
+    e o login seguiu como concluido. A automacao le a arvore de acessibilidade
+    do desktop inteiro, e naquele desktop as palavras "Selecione um
+    certificado", "Tema", "Emissor", "Serial" — e ate o numero de serie —
+    estavam escritas na tela, porque era o assunto da conversa.
+
+    Nenhum filtro de texto resolve isso: qualquer palavra que identifique o
+    dialogo pode aparecer num navegador aberto ao lado. O que NAO pode aparecer
+    e o processo: o diretorio de perfil e criado por sessao (`sessao-xxxx`) e
+    so o Chrome desta run o carrega.
+
+    Conjunto vazio significa "nao consegui determinar", e quem chama decide —
+    aqui, cair para a busca sem escopo, que e o comportamento antigo.
+    """
+    if not perfil:
+        return set()
+    try:
+        import subprocess
+        saida = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+             "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=20)
+        import json as _json
+        dados = _json.loads(saida.stdout or "[]")
+        if isinstance(dados, dict):
+            dados = [dados]
+    except Exception:  # noqa: BLE001 — sem escopo e pior que travar
+        return set()
+    alvo = perfil.replace("/", "\\").lower()
+    return {int(d["ProcessId"]) for d in dados
+            if d.get("CommandLine") and alvo in d["CommandLine"].replace("/", "\\").lower()}
+
+
+def _achar_dialogo(timeout: float, pids: set | None = None):
     if not _PYWINAUTO_OK:
         return None
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             for w in Desktop(backend="uia").windows():
+                # Fora do processo desta run, nada e candidato — nem que o
+                # titulo case perfeitamente. Ver `_pids_do_perfil`.
+                if pids:
+                    try:
+                        if w.element_info.process_id not in pids:
+                            continue
+                    except Exception:  # noqa: BLE001
+                        continue
                 try:
                     titulo = w.window_text() or ""
                 except Exception:
@@ -153,6 +226,13 @@ def _achar_dialogo(timeout: float):
                     # nao achava: ele nao e janela de topo nem filho direto —
                     # esta aninhado, e o tipo de controle varia. Titulo e a
                     # unica coisa que se manteve estavel entre as versoes.
+                    # So em janela que hospeda o dialogo de verdade. O
+                    # `class_name` ja filtra Chrome_WidgetWin_1 acima, mas o
+                    # VS Code e o Brave usam a MESMA classe — sao Electron e
+                    # Chromium. O que separa e o titulo da janela: o navegador
+                    # da automacao esta no gov.br.
+                    if not _JANELA_HOSPEDEIRA_RE.search(w.window_text() or ""):
+                        continue
                     aninhado = _descendente_por_titulo(w)
                     if aninhado is not None:
                         return aninhado
@@ -199,15 +279,24 @@ def _clicar_ok(dlg) -> bool:
     return False
 
 
-def selecionar_certificado_no_dialogo(cn: str = "", serial: str = "", timeout: float = 30.0) -> bool:
-    """Localiza a janela de certificado, seleciona o cert pelo serial (ou CN) e clica OK."""
+def selecionar_certificado_no_dialogo(cn: str = "", serial: str = "",
+                                      timeout: float = 30.0,
+                                      perfil: str = "") -> bool:
+    """Localiza a janela de certificado, seleciona o cert pelo serial (ou CN) e clica OK.
+
+    `perfil` e o `user_data_dir` do Chrome desta run. Com ele a busca so olha
+    janelas DESTE processo — sem ele, olha o desktop inteiro, e ai qualquer
+    janela que exiba as palavras do dialogo vira candidata.
+    """
     if not _PYWINAUTO_OK:
         print("[cert-dialog] pywinauto nao disponivel — fallback desativado.")
         return False
     alvo_serial = _norm(serial)
     alvo_cn     = _norm(cn)
-    print(f"[cert-dialog] Aguardando janela de certificado (ate {int(timeout)}s)...")
-    dlg = _achar_dialogo(timeout)
+    pids = _pids_do_perfil(perfil)
+    print(f"[cert-dialog] Aguardando janela de certificado (ate {int(timeout)}s"
+          f"{f', {len(pids)} processo(s) desta sessao' if pids else ', SEM escopo de processo'})...")
+    dlg = _achar_dialogo(timeout, pids)
     if dlg is None:
         print("[cert-dialog] Janela nao apareceu.")
         return False

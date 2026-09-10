@@ -1866,7 +1866,11 @@ def main(
                 threading.Thread(
                     target=_selecionar_cert_dialog,
                     args=(_cn, cert_serial),
-                    kwargs={"timeout": 90.0},
+                    # `perfil` escopa a busca ao processo DESTE Chrome. Sem
+                    # ele a varredura olha o desktop inteiro — e em 10/09/2026
+                    # casou com a janela do chat onde o problema estava sendo
+                    # discutido, porque as palavras do diálogo estavam na tela.
+                    kwargs={"timeout": 90.0, "perfil": user_data_dir},
                     daemon=True,
                 ).start()
             elif usar_windows_store and tentativa == 1:
