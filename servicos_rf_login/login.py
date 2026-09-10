@@ -465,18 +465,59 @@ def _clicar_entrar_govbr(page) -> bool:
     (é o caminho esperado), os demais são verificações rápidas de fallback.
     """
     print("Clicando em 'Entrar com gov.br'...")
+    achou = False
     for i, sel in enumerate(GOVBR_SELECTORS):
         try:
             loc = page.locator(sel).first
             loc.wait_for(state="visible", timeout=15_000 if i == 0 else 2_000)
-            if i:
-                print(f"  -> match com seletor alternativo: {sel}")
+        except Exception:
+            continue
+
+        # A partir daqui o botão EXISTE e está visível. O que falhar agora é
+        # outra coisa, e o log precisa dizer qual.
+        achou = True
+        if i:
+            print(f"  -> match com seletor alternativo: {sel}")
+        try:
             loc.click()
             print("  -> clicado.")
             return True
-        except Exception:
-            continue
-    print("  -> botão 'Entrar com gov.br' não encontrado em nenhum seletor.")
+        except Exception as e:
+            # Clique interceptado: popup que renderizou DEPOIS da varredura.
+            #
+            # `_fechar_popups_iniciais` roda antes daqui, mas espera 5s pelos
+            # cookies e 4s pelo tutorial — e quando o perfil do Chrome é novo
+            # os dois aparecem, às vezes só depois dessas esperas vencerem. O
+            # modal "Primeira vez no Portal de Serviços?" cobre o botão.
+            #
+            # Medido em 10/09/2026, RUN-11ca8a52, perfil `sessao-732c4178d9b8`
+            # recém-criado, com as duas empresas do lote caindo aqui:
+            #
+            #     -> match com seletor alternativo: #home-heading button
+            #     -> match com seletor alternativo: button:has-text('Entrar com')
+            #     -> botão 'Entrar com gov.br' não encontrado em nenhum seletor.
+            #
+            # Ele ACHOU em dois seletores e mesmo assim disse "não
+            # encontrado". Foi essa mensagem que me mandou procurar seletor
+            # quando o problema era um véu por cima.
+            print(f"  -> clique não passou ({type(e).__name__}); fechando "
+                  "popups e tentando de novo.")
+            _fechar_popups_iniciais(page)
+            try:
+                loc.click(timeout=5_000)
+                print("  -> clicado depois de fechar os popups.")
+                return True
+            except Exception:
+                continue
+
+    if achou:
+        # NÃO dizer "não encontrado" quando foi encontrado. São investigações
+        # opostas: seletor errado se conserta no seletor; clique bloqueado se
+        # conserta no que está por cima.
+        print("  -> botão 'Entrar com gov.br' encontrado, mas o clique não "
+              "passou — provavelmente há um popup ou véu sobre ele.")
+    else:
+        print("  -> botão 'Entrar com gov.br' não encontrado em nenhum seletor.")
     return False
 
 
