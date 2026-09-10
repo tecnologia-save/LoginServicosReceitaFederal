@@ -1631,7 +1631,18 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
                 break                  # intervalo cumprido e nada novo
             desfecho = proximo
 
-        if tentativa == MAX_TENTATIVAS_REPRESENTACAO:
+        # As DUAS saídas: o teto de tentativas e o teto de recusas.
+        #
+        # O `break` lá dentro sai só do `while` — o `for` continuava para a
+        # tentativa seguinte, `recusou` era reposto a False, e a recusa nova
+        # contava de novo. Medido na RUN-039e0604: três empresas com "o portal
+        # recusou a representacao 3 vez(es)", com o limite valendo 2.
+        #
+        # A mensagem já era a nova, o que provava que o código estava no ar e
+        # mesmo assim gastava a terceira tentativa. Guarda que existe e não
+        # interrompe é pior que guarda nenhuma: dá a impressão de estar
+        # protegendo.
+        if tentativa == MAX_TENTATIVAS_REPRESENTACAO or recusas >= RECUSAS_PARA_DESISTIR:
             break
         _restaurar_formulario(page)
 

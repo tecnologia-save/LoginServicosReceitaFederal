@@ -209,11 +209,20 @@ def test_erro_depois_do_captcha_tambem_gera_nova_tentativa(portal):
 
 
 def test_erro_persistente_termina_em_excecao_tipada(portal):
-    """RED 3: tres recusas. Nao devolve True, nao chama humano, nao insiste."""
+    """Recusa persistente: nao devolve True, nao chama humano, nao insiste.
+
+    Eram tres recusas ate 10/09/2026; agora sao duas. Recusa e o portal
+    RESPONDENDO nao — a terceira ida paga mais 31s de intervalo e mais um
+    captcha para ouvir o mesmo. O caso de ele NAO responder e outro, e continua
+    com as tres tentativas (ver o teste do desfecho "nada").
+
+    O desfecho tipado nao mudou: `RepresentacaoRejeitadaPeloPortal` e o que faz
+    a empresa virar pendencia de cadastro em vez de falha tecnica.
+    """
     p = portal(Portal(["erro"]))
     with pytest.raises(login.RepresentacaoRejeitadaPeloPortal):
         representar(p)
-    assert p.envios == login.MAX_TENTATIVAS_REPRESENTACAO
+    assert p.envios == login.RECUSAS_PARA_DESISTIR
 
 
 def test_texto_diferente_mesma_classe_tem_o_mesmo_tratamento(portal):
@@ -390,11 +399,22 @@ def test_falha_ao_enviar_o_formulario_ainda_tem_tres_chances(portal):
 
 
 def test_nao_ha_tres_tentativas_dentro_de_tres_tentativas(portal):
-    """Um unico conceito de tentativa: no maximo MAX envios."""
+    """Um unico conceito de tentativa: nenhum laco escondido dentro do outro.
+
+    O numero mudou (recusa agora para na segunda), mas o que este teste guarda
+    nao mudou: nao pode existir retry aninhado multiplicando envios. Por isso a
+    afirmacao e dupla — o teto absoluto vale SEMPRE, e no caminho de recusa
+    vale o teto menor.
+
+    Foi um laco de fora que continuou girando depois do `break` do laco de
+    dentro que produziu, na RUN-039e0604, tres empresas com "o portal recusou a
+    representacao 3 vez(es)" enquanto o limite valia 2.
+    """
     p = portal(Portal(["erro"]))
     with pytest.raises(login.RepresentacaoRejeitadaPeloPortal):
         representar(p)
-    assert p.envios == 3
+    assert p.envios <= login.MAX_TENTATIVAS_REPRESENTACAO
+    assert p.envios == login.RECUSAS_PARA_DESISTIR
 
 
 def test_o_perfil_confirmado_durante_o_intervalo_encerra_na_hora(portal):
