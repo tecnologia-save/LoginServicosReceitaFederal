@@ -1044,6 +1044,7 @@ MAX_TRATAMENTOS_CAPTCHA = 2
 # Desfechos possíveis do clique em Representar. Vocabulário FECHADO.
 DESFECHO_CONFIRMADA = "confirmada"
 DESFECHO_ERRO_PORTAL = "erro_portal"
+DESFECHO_BLOQUEIO_AUTOMACAO = "bloqueio_automacao"
 DESFECHO_CAPTCHA = "captcha"
 DESFECHO_PERFIL_OUTRO = "perfil_outro"
 DESFECHO_SEM_RESPOSTA = "sem_resposta"
@@ -1103,6 +1104,27 @@ class RepresentacaoRejeitadaPeloPortal(RuntimeError):
     repetida, com o intervalo pedido cumprido entre elas. Continua sendo falha
     técnica do fluxo para quem consome — não é caso de humano nem de retry no
     runner.
+    """
+
+
+class BloqueioPorAutomacao(RuntimeError):
+    """O portal barrou a SESSAO por parecer automatizada, ao representar.
+
+    Nao e recusa de procuracao, e por isso nao pode virar `perfil_recusado`.
+    A frase, capturada em print pelo Jean em 10/09/2026, e explicita:
+
+        O seu acesso foi bloqueado por possuir atributos que o caracteriza
+        como um acesso automatizado. Favor tentar novamente.
+
+    Ela vem no MESMO `.mensagemErro` que a recusa de procuracao, e por isso
+    era classificada como recusa. O estrago nao para na tentativa perdida:
+    duas recusas viram `RepresentacaoRejeitadaPeloPortal`, o runner reporta
+    `perfil_recusado`, e o Save Process marca a empresa com
+    `procuracao_cancelada_em` — mandando o juridico cobrar do cliente uma
+    procuracao que provavelmente esta perfeita.
+
+    E estado da CONTA, nao da empresa: a proxima empresa bate no mesmo muro,
+    gastando um login e um captcha para ouvir o mesmo. Termina a run.
     """
 
 
@@ -1289,6 +1311,36 @@ def _erro_representacao_visivel(page) -> bool:
         return False
 
 
+# A frase do bloqueio por automacao, dentro do mesmo `.mensagemErro`.
+#
+# Casar por trecho curto e em minusculas: o portal ja mudou a redacao antes, e
+# "acesso automatizado" e o nucleo que sobrevive. Nao guardamos o texto inteiro
+# em log — ele pode carregar quem se tenta representar.
+_MARCA_BLOQUEIO_AUTOMACAO = "acesso automatizado"
+
+
+def _erro_e_bloqueio_por_automacao(page) -> bool:
+    """Le a mensagem de erro SO para separar bloqueio de recusa.
+
+    O `_erro_representacao_visivel` decide que HA erro pela classe, e faz certo:
+    a classe e o contrato. Mas QUAL erro e outra pergunta, e essa so o texto
+    responde — sao desfechos opostos. Recusa de procuracao e da empresa e o
+    juridico resolve; bloqueio por automacao e da sessao e a run tem de parar.
+    """
+    try:
+        locator = page.locator(SEL_MENSAGEM_ERRO_REPRESENTACAO)
+        for i in range(locator.count()):
+            alvo = locator.nth(i)
+            if not alvo.is_visible():
+                continue
+            texto = (alvo.inner_text(timeout=2_000) or "").lower()
+            if _MARCA_BLOQUEIO_AUTOMACAO in texto:
+                return True
+    except Exception:  # noqa: BLE001 — sem prova, segue como recusa comum
+        pass
+    return False
+
+
 def _ha_captcha(page) -> bool:
     """Inspeção barata de presença. Indeterminação = não há."""
     try:
@@ -1320,6 +1372,9 @@ def _aguardar_desfecho(page, cnpj_alvo: str,
         if estado == PERFIL_CORRETO:
             return DESFECHO_CONFIRMADA
         if _erro_representacao_visivel(page):
+            # Qual erro, antes de chamar de recusa.
+            if _erro_e_bloqueio_por_automacao(page):
+                return DESFECHO_BLOQUEIO_AUTOMACAO
             return DESFECHO_ERRO_PORTAL
         if _ha_captcha(page):
             return DESFECHO_CAPTCHA
@@ -1603,6 +1658,20 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
                 desfecho = (DESFECHO_CONFIRMADA if resultado is True
                             else resultado)
                 continue
+
+            # Bloqueio da SESSAO nao gasta tentativa: nao ha o que retentar.
+            #
+            # Cai fora na hora, sem o intervalo de 31s e sem consumir recusa.
+            # Insistir aqui e o pior movimento possivel: cada nova ida reforca
+            # o sinal que causou o bloqueio, e o custo e um login e um captcha
+            # por empresa para ouvir a mesma frase.
+            if desfecho == DESFECHO_BLOQUEIO_AUTOMACAO:
+                print("[cnpj] Portal bloqueou o acesso por considerar a sessao "
+                      "automatizada. Nao e recusa de procuracao — encerrando.")
+                raise BloqueioPorAutomacao(
+                    "o portal bloqueou o acesso por caracterizar a sessao como "
+                    "automatizada. A procuracao NAO foi recusada; a sessao foi. "
+                    "Nenhuma empresa restante foi consultada.")
 
             if desfecho == DESFECHO_ERRO_PORTAL:
                 if not recusou:

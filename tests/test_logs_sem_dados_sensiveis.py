@@ -308,8 +308,14 @@ def test_o_observador_de_desfecho_so_devolve_vocabulario_fechado():
     import ast as _ast
     import inspect
 
+    # `DESFECHO_BLOQUEIO_AUTOMACAO` entrou em 10/09/2026. Ele nasce de uma
+    # leitura do texto da pagina — `_erro_e_bloqueio_por_automacao` procura a
+    # frase "acesso automatizado" —, e e exatamente por isso que ele precisa
+    # estar NESTA lista: o que sai daqui e a constante, nunca o texto lido. A
+    # condicao pode olhar a pagina; o valor devolvido, nao.
     nomes = {"DESFECHO_CONFIRMADA", "DESFECHO_ERRO_PORTAL", "DESFECHO_CAPTCHA",
-             "DESFECHO_PERFIL_OUTRO", "DESFECHO_SEM_RESPOSTA"}
+             "DESFECHO_PERFIL_OUTRO", "DESFECHO_SEM_RESPOSTA",
+             "DESFECHO_BLOQUEIO_AUTOMACAO"}
 
     def _valores(no):
         """Os valores que a expressao pode devolver."""
