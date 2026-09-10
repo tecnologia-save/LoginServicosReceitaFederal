@@ -73,16 +73,41 @@ def _tem_marcas_de_coluna(w) -> bool:
     silencio, e o clicador desistia como se o dialogo nao existisse.
     """
     try:
-        textos = []
+        # Cada elemento comparado SOZINHO, e por igualdade — nao por substring
+        # numa string gigante.
+        #
+        # Antes: `_norm(" ".join(textos))` colava os 200 descendentes num
+        # unico texto sem espacos, e procurava cada marca como substring. Com
+        # isso "TEMA" casa dentro de "sisTEMA", e "SERIAL" casa em qualquer
+        # emenda de palavras ("...poder SERIA Legal..." vira "PODERSERIALEGAL").
+        # Numa janela de navegador com texto de pagina, dava True quase sempre.
+        #
+        # Medido em 10/09/2026, run aa762acf:
+        #
+        #     [cert-dialog] Janela encontrada: 'Servicos da Receita Federal - Google Chrome'
+        #     [cert-dialog] 129 elemento(s) com texto no dialogo.
+        #     [cert-dialog] Nenhum elemento casou.
+        #
+        # Ele "achou o dialogo" na janela do NAVEGADOR. O gatilho estava na
+        # propria tela de erro: a URL era `?logoutCertificadoDigital=1`, e
+        # `CertificadoDigital` em maiusculas contem `CERTIFI`, a marca do
+        # titulo. O 404 do certificado fazia a janela parecer o dialogo dele.
+        #
+        # DUAS marcas distintas, e nao uma: o dialogo real expoe `Tema`,
+        # `Emissor` e `Serial` como DataItem separados. Exigir duas elimina a
+        # coincidencia isolada sem depender do idioma da tabela — em ingles
+        # sobram `Issuer` e `Subject`, que ja bastam.
+        achadas = set()
         for d in w.descendants()[:200]:
             try:
-                t = d.window_text()
-            except Exception:
+                t = _norm(d.window_text())
+            except Exception:  # noqa: BLE001
                 continue
-            if t:
-                textos.append(t)
-        junto = _norm(" ".join(textos))
-        return any(m in junto for m in _MARCAS_COLUNA)
+            if t in _MARCAS_COLUNA:
+                achadas.add(t)
+                if len(achadas) >= 2:
+                    return True
+        return False
     except Exception:
         return False
 
