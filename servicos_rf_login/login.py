@@ -641,14 +641,16 @@ def _fechar_popups_iniciais(page) -> None:
 _ERROS_HTTP_DO_SSO = (
     ("408", "request time-out", "request timeout"),
     ("403", "forbidden", "acesso negado"),
-    ("404", "not found", "página não encontrada"),
+    # "portal nao encontrado" e a pagina 404 ESTILIZADA do portal — com o
+    # titulo da marca, nao "404 Not Found". Ver `pagina_de_erro_http`.
+    ("404", "not found", "página não encontrada", "portal não encontrado"),
     ("502", "bad gateway"),
     ("503", "service unavailable"),
     ("504", "gateway time-out", "gateway timeout"),
 )
 
 
-def pagina_de_erro_http(page) -> str:
+def pagina_de_erro_http(page, inspecionar_corpo: bool = False) -> str:
     """Devolve o código do erro se a tela for uma página de erro crua do SSO.
 
     Só o CÓDIGO sai daqui — nunca o corpo da página, que pode carregar
@@ -687,7 +689,21 @@ def pagina_de_erro_http(page) -> str:
     # O limite de tamanho e o que torna a inspecao segura: pagina de erro crua
     # tem duas linhas. Portal de verdade tem menus, rodape e marca — nao passa
     # nem perto. E continua saindo so o CODIGO, nunca o corpo.
-    if titulo:
+    # TERCEIRA variante do 404 num dia. As duas primeiras foram resolvidas por
+    # URL e por corpo-sem-titulo; esta tem URL limpa (a raiz do portal) E
+    # titulo de verdade — "Portal de Servicos Digitais da Receita Federal" —,
+    # e so o corpo denuncia:
+    #
+    #     Portal nao encontrado
+    #     Talvez voce tenha se equivocado ao digitar o endereco URL...
+    #
+    # E a pagina 404 ESTILIZADA do portal, com cabecalho e marca. Por isso o
+    # corpo deixa de ser consultado apenas quando falta titulo.
+    #
+    # Continua opcional: ler o corpo custa uma ida ao navegador, e quem chama
+    # num laco de 60 iteracoes decide a frequencia — o mesmo cuidado que
+    # `_limite_de_dispositivos` ja recebe ali (`if _seg % 3 == 0`).
+    if titulo and not inspecionar_corpo:
         return ""
     try:
         corpo = (page.inner_text("body", timeout=2_000) or "").strip().lower()
@@ -2204,7 +2220,11 @@ def main(
                 # 60 s inteiros contra uma tela que já respondeu, e o log só
                 # mostra "aguardando redirecionamento" repetido — que foi o que
                 # o Jean descreveu como "a automação se perde".
-                erro_sso = pagina_de_erro_http(page)
+                # A cada 3s o corpo entra na conta — a variante estilizada do
+                # 404 tem titulo legitimo e so o corpo a distingue. Mesma
+                # cadencia do `_limite_de_dispositivos` abaixo, pela mesma
+                # razao: e a checagem cara.
+                erro_sso = pagina_de_erro_http(page, inspecionar_corpo=(_seg % 3 == 0))
                 if erro_sso:
                     print(f"  -> Página de erro do SSO (HTTP {erro_sso}) — "
                           "não adianta esperar.")

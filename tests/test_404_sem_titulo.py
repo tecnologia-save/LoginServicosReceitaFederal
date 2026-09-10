@@ -43,13 +43,27 @@ def test_portal_de_verdade_nao_e_confundido():
     assert login.pagina_de_erro_http(_Pagina(titulo="", corpo=portal)) == ""
 
 
-def test_o_corpo_so_e_lido_quando_NAO_ha_titulo():
-    """Ler o corpo de toda página seria caro e desnecessário — e o título
-    resolve a maioria dos casos."""
+def test_o_corpo_e_lido_sem_titulo_OU_sob_pedido():
+    """PREMISSA REVISADA NO MESMO DIA.
+
+    Este teste dizia "corpo só quando não há título", e era assim que eu tinha
+    escrito: o título resolve a maioria dos casos e ler o corpo custa uma ida
+    ao navegador.
+
+    A terceira variante do 404 derrubou a regra. A página 404 ESTILIZADA do
+    portal tem título legítimo — "Portal de Serviços Digitais da Receita
+    Federal" — e URL limpa, a própria raiz. Nada além do corpo a distingue de
+    um portal saudável.
+
+    O barato continua sendo o padrão: `inspecionar_corpo` é opcional, e quem
+    chama num laço de 60 iterações decide a frequência. O laço do
+    redirecionamento pede a cada 3s, mesma cadência do
+    `_limite_de_dispositivos` e pela mesma razão.
+    """
     fonte = inspect.getsource(login.pagina_de_erro_http)
-    i = fonte.index("if titulo:\n        return \"\"")
-    j = fonte.index("inner_text")
-    assert i < j, "corpo só depois de descartar o caminho do título"
+    assert "if titulo and not inspecionar_corpo:" in fonte, (
+        "sem pedido explícito, título presente encerra sem ler o corpo")
+    assert "inner_text" in fonte
 
 
 def test_so_o_codigo_sai_daqui():
