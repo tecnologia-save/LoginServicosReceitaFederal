@@ -1690,7 +1690,24 @@ def main(
     _configurar_download(user_data_dir)
 
     # --- Montar argumentos de lançamento do Chrome ---
-    chrome_args = ["--start-maximized", "--remote-debugging-port=9222"]
+    # `--remote-debugging-port=9222` SAIU daqui em 10/09/2026.
+    #
+    # Ninguem se conectava nela: era a unica referencia a 9222 nos tres repos.
+    # Em troca custava duas coisas. Marcador de automacao — porta de depuracao
+    # aberta e um dos sinais que fingerprinting procura. E buraco de seguranca:
+    # qualquer processo local podia se conectar e dirigir um navegador
+    # autenticado no e-CAC, com certificado carregado.
+    #
+    # `--disable-blink-features=AutomationControlled` entrou junto. Sem ele
+    # `navigator.webdriver` responde `true`, e a pagina descobre que e automacao
+    # em uma linha de JavaScript. Isso importa direto no problema de hoje: o
+    # hCaptcha escala dificuldade quando desconfia do cliente, e em 09/09/2026
+    # uma sessao levou 17 desafios seguidos. Estavamos otimizando o RESOLVEDOR
+    # enquanto o portal ja tinha classificado a sessao.
+    chrome_args = [
+        "--start-maximized",
+        "--disable-blink-features=AutomationControlled",
+    ]
     if usar_windows_store:
         chrome_args.append(_build_auto_select_cert_flag(cert_subject_cn))
 
@@ -1702,6 +1719,11 @@ def main(
         ignore_https_errors=True,
         accept_downloads=True,
         args=chrome_args,
+        # O Playwright adiciona `--enable-automation` por conta propria, e e ele
+        # que produz a barra "o Chrome esta sendo controlado por um software de
+        # teste" e alimenta os mesmos sinais que o `AutomationControlled`
+        # desliga. Tirar a flag sem tirar o default seria meio caminho.
+        ignore_default_args=["--enable-automation"],
     )
     if not usar_windows_store and resolved_path and resolved_pass:
         launch_kwargs["client_certificates"] = _build_client_certificates(
