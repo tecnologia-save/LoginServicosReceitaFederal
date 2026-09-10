@@ -1808,6 +1808,24 @@ def main(
         # teste" e alimenta os mesmos sinais que o `AutomationControlled`
         # desliga. Tirar a flag sem tirar o default seria meio caminho.
         ignore_default_args=["--enable-automation"],
+        # Sem isto o patchright acrescenta `--no-sandbox` sozinho:
+        #
+        #     if (options2.chromiumSandbox !== true)
+        #       chromeArguments.push("--no-sandbox");
+        #
+        # E o Chrome exibe a tarja amarela "Você está usando uma sinalização
+        # de linha de comando não suportada: --no-sandbox". Quem normalmente
+        # SUPRIME essa tarja é `--enable-automation` — que a linha acima tira,
+        # de proposito, para matar a outra tarja. Uma correcao de deteccao
+        # destapou um aviso que anuncia automacao em letras garrafais.
+        #
+        # Visto em print da tela em 10/09/2026, com a tarja no topo do e-CAC.
+        # Ela ainda empurra a pagina uns 40px para baixo, o que desloca tudo
+        # que se mede por coordenada.
+        #
+        # Aqui e Windows com Chrome real: nao ha motivo para desligar o
+        # sandbox. Ligado, a flag nao e passada e a tarja nao existe.
+        chromium_sandbox=True,
     )
     if not usar_windows_store and resolved_path and resolved_pass:
         launch_kwargs["client_certificates"] = _build_client_certificates(
@@ -1864,11 +1882,35 @@ def main(
                 "acesso.gov.br (Meus dispositivos conectados) ou aguarde as "
                 "sessões antigas expirarem.")
 
-        if _ja_logado(page):
+        # Já logado é DESFECHO, não observação.
+        #
+        # Este `if` só imprimia. A execução seguia para `_clicar_entrar_govbr`
+        # e procurava um botão que, estando logado, legitimamente não existe —
+        # e a ausência dele era declarada falha de login.
+        #
+        # Medido em 10/09/2026, RUN-1aa3607c, duas empresas seguidas:
+        #
+        #     -> Redirecionado automaticamente. Login concluído.
+        #     Clicando em 'Entrar com gov.br'...
+        #     -> botão 'Entrar com gov.br' não encontrado em nenhum seletor.
+        #     ERRO: Login: botão não encontrado em nenhum dos seletores.
+        #
+        # Três linhas de log em que a primeira já respondia a pergunta.
+        #
+        # Vira alcançável quando a sessão anterior NÃO morreu — e ela não
+        # morre: o logout do Serviços RF ainda não está mapeado, e o log diz
+        # isso em bom português ("seguirá ocupando um dispositivo no gov.br
+        # até expirar"). Perfil com sessão viva entra sozinho. Ou seja, quanto
+        # PIOR o encerramento, mais empresas caem aqui.
+        #
+        # O laço do certificado, logo abaixo, sempre teve a guarda certa
+        # (`if _ja_logado(page): break`). Aqui ela faltava.
+        ja_entrou = _ja_logado(page)
+        if ja_entrou:
             print("  -> Redirecionado automaticamente. Login concluído.")
 
         # --- Clicar em "Entrar com gov.br" ---
-        if not _clicar_entrar_govbr(page):
+        if not ja_entrou and not _clicar_entrar_govbr(page):
             registrar_erro("Login: botão 'Entrar com gov.br' não encontrado "
                            "em nenhum dos seletores.")
             try:
