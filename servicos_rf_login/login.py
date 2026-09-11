@@ -1250,6 +1250,25 @@ class BloqueioPorAutomacao(RuntimeError):
     """
 
 
+# Desfechos em que o login esta BOM e so a representacao nao fechou.
+#
+# Sao respostas do portal, nao falhas de navegador: a sessao gov.br continua de
+# pe e serve a proxima empresa do mesmo certificado. Por isso a excecao leva a
+# sessao anexada em vez de o navegador ser fechado — ver o `except` em `main`.
+#
+# `BloqueioPorAutomacao` fica DE FORA de proposito: ali a sessao e justamente o
+# que o portal recusou, e reaproveita-la e insistir no que causou o bloqueio.
+def _desfechos_com_sessao_viva():
+    return (
+        RepresentacaoNaoConfirmada,
+        RepresentacaoRejeitadaPeloPortal,
+        RepresentacaoRequerIntervencao,
+        RepresentacaoCancelada,
+        RepresentacaoExpirada,
+        FalhaDoResolvedorCaptcha,
+    )
+
+
 class RepresentacaoRequerIntervencao(RuntimeError):
     """Há captcha na representação e ninguém pode resolvê-lo nesta execução."""
 
@@ -1260,6 +1279,10 @@ class RepresentacaoCancelada(RuntimeError):
 
 class RepresentacaoExpirada(RuntimeError):
     """A validação manual não foi concluída dentro do prazo."""
+
+
+# Materializada aqui, depois de todas as classes existirem.
+DESFECHOS_COM_SESSAO_VIVA = _desfechos_com_sessao_viva()
 
 
 def _texto_do_seletor(page, seletor: str) -> str | None:
@@ -2447,6 +2470,33 @@ def main(
                 page, cnpj,
                 on_manual_challenge=on_manual_challenge,
                 prazo_intervencao_s=prazo_intervencao_s)
+    except DESFECHOS_COM_SESSAO_VIVA as e:
+        # O LOGIN passou; só a representação não fechou. A sessão gov.br está
+        # de pé e serve a PRÓXIMA empresa do mesmo certificado.
+        #
+        # Abortar aqui é o que transforma "perdi uma empresa" em "perdi um
+        # dispositivo". Medido em 11/09/2026, RUN-385b9699:
+        #
+        #     11:05:16  LEONARDO VIEIRA  -> Lançando Chrome   (login 1)
+        #     11:07:45  LINHARES & CIA   -> Lançando Chrome   (login 2)
+        #     11:10:10  dispositivos_maximo
+        #
+        # A LEONARDO caiu num captcha que não se automatiza, a sessão foi
+        # descartada, e a empresa seguinte pagou outro login — outro
+        # dispositivo no gov.br. Três desses derrubam a run inteira.
+        #
+        # O runner SEMPRE esperou isto. O `except CaptchaHumano` dele diz, em
+        # bom português: "A sessão sobrevive: o captcha barrou esta empresa,
+        # não o login, e as seguintes do mesmo certificado ainda a aproveitam".
+        # Ele só nunca recebeu o que esperava.
+        #
+        # A página NÃO é devolvida como utilizável — isso continua valendo, e
+        # é o que o comentário original protegia: sem representação confirmada,
+        # consultar com o perfil pessoal dá 401. A sessão vai ANEXADA À
+        # EXCEÇÃO, e quem trata decide. Mesma convenção que `SemProcuracao` já
+        # usa do lado do runner.
+        e.sessao = (p, context, page)
+        raise
     except Exception:
         # Falha inesperada: encerra o Playwright para não vazar o event loop
         # (a próxima tentativa falharia com 'Sync API inside the asyncio loop').
