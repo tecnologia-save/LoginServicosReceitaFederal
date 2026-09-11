@@ -989,5 +989,23 @@ def test_o_teto_duro_e_maior_que_o_orcamento_inicial():
 
 
 def test_o_teto_duro_respeita_o_limite_do_portal():
-    """70,3 s e a maior representacao CONFIRMADA no historico de dev."""
-    assert 70.3 - login.DEADLINE_MAX_COM_PROGRESSO_S >= 10.0
+    """70,3 s e a maior representacao CONFIRMADA no historico de dev.
+
+    A margem exigida CAIU de 10 s para 5 s em 11/09/2026, e isso e decisao
+    consciente, nao afrouxamento. Com o teto em 60 s o bonus de progresso
+    valia 5 s — a extensao soma o orcamento inteiro e e cortada aqui, entao
+    `min(T+60, T+110)` deixava so a sobra. Cinco segundos nao pagam um desafio
+    novo, e uma rodada resolvida custa 15 a 25 s.
+
+    Medido na RUN-2c68037a, tres empresas seguidas: resolveu o primeiro
+    desafio, o portal abriu o segundo, e nao havia orcamento para ele.
+
+    A margem NAO foi a zero de proposito. 70,3 s e o maximo observado, nao um
+    limite garantido, e o preco de errar para cima e o portal recusar — que
+    vira `perfil_recusado` e marca a empresa como sem procuracao, uma acusacao
+    falsa que sobrevive no cadastro.
+    """
+    assert 70.3 - login.DEADLINE_MAX_COM_PROGRESSO_S >= 5.0
+    bonus = (login.DEADLINE_MAX_COM_PROGRESSO_S
+             - login.DEADLINE_CAPTCHA_REPRESENTACAO_S)
+    assert bonus >= 10.0, "bonus menor que isto nao paga um desafio novo"

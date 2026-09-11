@@ -1138,7 +1138,35 @@ DEADLINE_CAPTCHA_IMAGEM_S = 58.0
 # 60 s ficam 10,3 s abaixo dos 70,3 s da maior representação CONFIRMADA no
 # histórico de dev. É o mesmo teto da bola, e pelo mesmo motivo: é o limite do
 # portal que manda, não o do resolvedor.
-DEADLINE_MAX_COM_PROGRESSO_S = 60.0
+#
+# SUBIU para 70 s em 11/09/2026. O "+5 s" que aparecia no log não era o bônus:
+# a extensão soma o orçamento INTEIRO (55 s) e é cortada por este teto, então
+# `min(T+60, T+110)` deixava 5 s. Cinco segundos não pagam um desafio novo —
+# uma rodada resolvida custa 15 a 25 s.
+#
+# O que o teto de 60 produzia, medido na RUN-2c68037a, três empresas seguidas:
+#
+#     3 Desafio aberto | 3 Captcha resolvido | 3 Desafio ainda ativo
+#     6 SegundoProvedorSemOrcamento | 3 não concluída
+#
+# Resolvia o primeiro desafio, o portal abria o segundo, e não havia orçamento
+# para ele. Com representações de UM desafio isso não aparece — e por isso a
+# média me enganou: nenhuma confirmação passou de 52 s, o que me fez concluir
+# que tempo não era o gargalo. Era, no caso de dois desafios.
+#
+# 65 s, e não 70. Setenta seria sentar exatamente na maior representação já
+# confirmada — que é o MÁXIMO OBSERVADO, não um limite garantido. O teste
+# `test_o_teto_duro_respeita_o_limite_do_portal` exigia 10 s de margem e me
+# barrou ao tentar; ele estava certo, e a margem foi reduzida de propósito, não
+# removida.
+#
+# O preço de errar para cima é conhecido e caro: o portal recusa, isso vira
+# `erro_portal`, e `anotarProcuracoes` marca a empresa como sem procuração —
+# uma acusação falsa que sobrevive no cadastro depois da run.
+#
+# 65 s dobram o bônus (5 s → 10 s) e mantêm 5,3 s de margem. Se a próxima
+# medição mostrar representações confirmadas acima de 70,3 s, dá para subir.
+DEADLINE_MAX_COM_PROGRESSO_S = 65.0
 
 
 def _orcamento_do_captcha(tipo: str) -> tuple[int, float]:
