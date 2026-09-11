@@ -1809,8 +1809,68 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
             if desfecho == DESFECHO_PERFIL_OUTRO:
                 # Observação EXPLÍCITA de representação errada. Repetir às
                 # cegas três vezes não a transforma na certa.
-                raise RepresentacaoNaoConfirmada(
-                    "o perfil ativo nao e o solicitado.")
+                #
+                # MAS não depois de uma recusa. Quando o portal recusa, o
+                # perfil ativo continua sendo o antigo POR DEFINIÇÃO — a troca
+                # não aconteceu porque ele não deixou. Isso não é
+                # "representação errada": é a consequência esperada da recusa,
+                # e tratá-la como sessão quebrada custa caro.
+                #
+                # Medido em 11/09/2026 sobre 12 runs e 51 empresas: acontece em
+                # 10% delas. RUN-183302e5, COMÉRCIO E INDÚSTRIA:
+                #
+                #     19:01:17  Representação solicitada
+                #     19:01:35  Portal recusou      → recusas = 1 (limite 2)
+                #     19:01:52  PERFIL_OUTRO        → RepresentacaoNaoConfirmada
+                #               → ErroPerfil → login novo: 106,6s e um captcha
+                #               → e o portal recusou mais duas vezes
+                #
+                # O `recusas` estava em 1 com limite 2: o código PRETENDIA
+                # tentar de novo, barato, na mesma sessão. Este ramo roubava
+                # essa intenção e trocava por um login inteiro.
+                #
+                # O caro não são os 106 segundos — é o dispositivo a mais no
+                # gov.br. `dispositivos_maximo` derrubou duas runs hoje, e ele
+                # mata o lote inteiro, não uma empresa.
+                #
+                # A proteção original continua de pé: consultar com o perfil
+                # errado é impedido por `confirmar_perfil`, que o runner roda
+                # antes de ler qualquer processo — barreira independente desta.
+                if not recusou:
+                    raise RepresentacaoNaoConfirmada(
+                        "o perfil ativo nao e o solicitado.")
+                # Conta e SAI do laço interno.
+                #
+                # Converter para `ERRO_PORTAL` e seguir no `while` era laço
+                # infinito: `recusou` já é True, então o contador não sobe, o
+                # limite nunca é atingido, e `_observar_intervalo` devolve
+                # `PERFIL_OUTRO` de novo — para sempre. Peguei isso porque o
+                # teste que exercita o laço travou a suíte.
+                #
+                # Contar é o certo: este é um desfecho NOVO, observado depois
+                # do intervalo cumprido, e não a mesma recusa relida. Sair do
+                # `while` devolve a vez ao `for tentativa`, que reenvia o
+                # formulário — a segunda tentativa que o limite já previa.
+                # SAI do laço interno, SEM contar de novo.
+                #
+                # A recusa e este `PERFIL_OUTRO` são o MESMO evento: o portal
+                # disse não, e por isso o perfil não trocou. `recusou` existe
+                # exatamente para não contar duas vezes a mesma recusa dentro
+                # de uma tentativa — incrementar aqui atingia o limite na
+                # primeira ida e eliminava a segunda tentativa, que é tudo o
+                # que esta correção queria preservar.
+                #
+                # Converter para `ERRO_PORTAL` e continuar no `while` era pior:
+                # laço infinito, porque com `recusou` já True o contador nunca
+                # sobe e o limite nunca chega. Os dois erros foram pegos pelo
+                # teste que exercita o laço de verdade.
+                #
+                # Sair devolve a vez ao `for tentativa`, que reenvia o
+                # formulário. Lá `recusou` volta a False, então a recusa da
+                # segunda ida conta — e aí sim o limite é atingido.
+                print("[cnpj] Perfil segue o antigo porque o portal recusou — "
+                      "é a recusa, não sessão quebrada. Sem login novo.")
+                break
 
             if desfecho == DESFECHO_CAPTCHA:
                 if tratamentos >= MAX_TRATAMENTOS_CAPTCHA:

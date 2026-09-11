@@ -25,6 +25,8 @@ o proprio portal pediu.
 
 Dados sinteticos. Nenhum CNPJ, empresa ou documento de cliente.
 """
+
+import inspect
 import pytest
 
 from servicos_rf_login import login
@@ -1009,3 +1011,64 @@ def test_o_teto_duro_respeita_o_limite_do_portal():
     bonus = (login.DEADLINE_MAX_COM_PROGRESSO_S
              - login.DEADLINE_CAPTCHA_REPRESENTACAO_S)
     assert bonus >= 10.0, "bonus menor que isto nao paga um desafio novo"
+
+
+# ══ Perfil que não trocou PORQUE o portal recusou ═══════════════════════════
+
+class _PortalQueRecusaEMantemOPerfilAntigo(Portal):
+    """Recusa E deixa o perfil anterior visível — o caso real do portal.
+
+    O `Portal` base só expõe documento quando `estado == "confirmada"`, então
+    nunca produzia `PERFIL_OUTRO` junto de uma recusa. É exatamente essa
+    combinação que acontece em produção: o portal recusa, e o perfil ativo
+    continua sendo o de antes porque a troca não foi autorizada.
+    """
+
+    def locator(self, seletor):
+        if self.estado == "erro":
+            if seletor == login.SEL_DOCUMENTO_REPRESENTADO:
+                return _um(OUTRO)
+            if seletor == login.SEL_PAPEL_REPRESENTACAO:
+                return _um(self.papel)
+        return super().locator(seletor)
+
+
+def test_perfil_antigo_apos_recusa_nao_vira_login_novo(portal):
+    """Perfil inalterado depois de uma recusa É a recusa, não sessão quebrada.
+
+    Antes: `PERFIL_OUTRO` levantava `RepresentacaoNaoConfirmada`, o adaptador
+    traduzia para `ErroPerfil`, e o runner fechava o navegador para refazer o
+    login inteiro. Medido em 11/09/2026, RUN-183302e5:
+
+        19:01:17  Representação solicitada
+        19:01:35  Portal recusou      → recusas = 1 (o limite é 2)
+        19:01:52  PERFIL_OUTRO        → login novo: 106,6s e um captcha
+                  → e o portal recusou mais duas vezes
+
+    O `recusas` estava em 1 com limite 2: o código PRETENDIA tentar de novo,
+    na mesma sessão, de graça. Este caminho roubava a intenção.
+
+    Sobre 12 runs e 51 empresas, ocorria em 10% delas. O caro não são os
+    segundos — é o dispositivo a mais no gov.br, e `dispositivos_maximo`
+    derrubou duas runs no mesmo dia.
+    """
+    p = portal(_PortalQueRecusaEMantemOPerfilAntigo(["erro"]))
+    with pytest.raises(login.RepresentacaoRejeitadaPeloPortal):
+        representar(p)
+    # Segue no vocabulário da RECUSA, e usa a segunda tentativa que já estava
+    # prevista — em vez de sair como "não confirmada" na primeira.
+    assert p.envios == login.RECUSAS_PARA_DESISTIR
+
+
+def test_perfil_de_outro_SEM_recusa_continua_sendo_falha():
+    """A proteção original não foi afrouxada.
+
+    Sem recusa na tela, perfil de outro é observação explícita de
+    representação errada — e repetir às cegas não a transforma na certa.
+    """
+    fonte = inspect.getsource(login._representar_cnpj_procurador)
+    i = fonte.index("if desfecho == DESFECHO_PERFIL_OUTRO:")
+    j = fonte.index("if desfecho == DESFECHO_CAPTCHA:", i)
+    trecho = fonte[i:j]
+    assert "if not recusou:" in trecho
+    assert "raise RepresentacaoNaoConfirmada(" in trecho
