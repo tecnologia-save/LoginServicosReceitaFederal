@@ -2017,6 +2017,26 @@ def main(
         # Aqui e Windows com Chrome real: nao ha motivo para desligar o
         # sandbox. Ligado, a flag nao e passada e a tarja nao existe.
         chromium_sandbox=True,
+        # Nenhuma permissao concedida, e — o que importa — nenhum BALAO.
+        #
+        # Declarar a lista (ainda que vazia) faz o Playwright responder aos
+        # pedidos de permissao pelo protocolo, em vez de deixar o Chrome
+        # desenhar a bolha nativa. Sem isto, perfil novo + `headless=False`
+        # produz o balao de verdade na tela.
+        #
+        # Capturado em print pelo Jean em 10/09/2026:
+        #
+        #     sso.acesso.gov.br quer / Saber sua localizacao
+        #     [Permitir ao acessar o site] [Permitir desta vez] [Nunca permitir]
+        #
+        # Bolha nativa nao e elemento da pagina: nenhum seletor a fecha, e ela
+        # fica por cima. E a mesma familia do modal de cookies e do tutorial —
+        # UI atravessando a automacao —, so que esta nem e do site.
+        #
+        # Vazia, e nao `["geolocation"]`: conceder entregaria a localizacao
+        # real da VM sem necessidade. O que se quer e que o pedido seja
+        # RESPONDIDO, nao atendido.
+        permissions=[],
     )
     if not usar_windows_store and resolved_path and resolved_pass:
         launch_kwargs["client_certificates"] = _build_client_certificates(
@@ -2058,6 +2078,49 @@ def main(
 
         # Fecha popups que aparecem ao abrir o portal (cookies + tour de boas-vindas)
         _fechar_popups_iniciais(page)
+
+        # A tela ABRIU, mas abriu o quê? Página de erro não tem botão nenhum.
+        #
+        # Este projeto já fez este mesmo argumento para o botão do
+        # CERTIFICADO, e a proteção ficou só lá: "a automação caça 'Seu
+        # certificado digital' dentro de uma tela de 408/404, onde ele
+        # legitimamente não existe, e reporta 'botão não encontrado' —
+        # mandando quem lê investigar o seletor, que é o lugar errado".
+        #
+        # Vale igual aqui, e hoje custou caro. Medido em 11/09/2026,
+        # RUN-7e9b0015, com perfil novo `sessao-3b166773531c`:
+        #
+        #     -> página inicial carregada.
+        #     Clicando em 'Entrar com gov.br'...
+        #     -> botão 'Entrar com gov.br' não encontrado em nenhum seletor.
+        #     Login concluído em 15.4s
+        #
+        # Quinze segundos — o teto do primeiro seletor — gastos varrendo uma
+        # tela que não tinha o botão. E o portal produziu TRÊS variantes de
+        # 404 só em 10/09: a crua sem título, a estilizada com título da
+        # marca, e o `?logoutCertificadoDigital&codErro`. `inspecionar_corpo`
+        # cobre as três.
+        #
+        # Recarregar uma vez antes de desistir: as três variantes que vimos
+        # foram transitórias — o Jean deu refresh à mão numa delas e o portal
+        # voltou ao normal.
+        erro_inicial = pagina_de_erro_http(page, inspecionar_corpo=True)
+        if erro_inicial:
+            print(f"  -> portal respondeu HTTP {erro_inicial} na primeira "
+                  "tela. Recarregando antes de procurar o botão.")
+            try:
+                page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded",
+                          timeout=30_000)
+                page.wait_for_timeout(1_500)
+                _fechar_popups_iniciais(page)
+            except Exception:  # noqa: BLE001
+                pass
+            erro_inicial = pagina_de_erro_http(page, inspecionar_corpo=True)
+            if erro_inicial:
+                registrar_erro(
+                    f"Login: portal respondeu HTTP {erro_inicial} na primeira "
+                    "tela, e o recarregamento não resolveu.")
+                return _abortar(p, context)
 
         # ANTES de gastar captcha: a tarja de limite de dispositivos aparece
         # ja na primeira tela, e nenhuma tentativa passa enquanto ela estiver
