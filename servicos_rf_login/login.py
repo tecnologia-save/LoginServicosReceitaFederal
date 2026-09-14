@@ -71,6 +71,57 @@ def host_da_url(url) -> str:
     except ValueError:
         return "?"
 
+def garantir_janela_maximizada(page) -> str:
+    """Deixa a janela do Chrome maximizada. Devolve o estado ANTERIOR.
+
+    "maximized"/"fullscreen" = já estava, nada feito; "normal"/"minimized" =
+    estava fora e foi maximizada; "" = não deu para ler nem ajustar. Nunca
+    levanta.
+
+    Visto pelo Jean por RDP na VM do Jurídico, RUN-ac11ba1a (14/09/2026): logo
+    depois do login a janela saiu de maximizada, e a mesma run terminou com
+
+        Não foi possível encerrar a sessão pelo portal — ... Itens visíveis no
+        menu: (nenhum lido)
+
+    com o menu do avatar procurado numa janela estreita, onde o portal troca o
+    cabeçalho pelo responsivo. A ligação entre as duas coisas é SUSPEITA, não
+    prova. A causa do "desmaximizar" também não está fechada: o duplo-clique
+    físico que confirma a janela de certificado é o primeiro candidato, mas em
+    dev ele é o caminho de TODAS as confirmações (47 de 47 em 10 dias) e o
+    logout funcionou em 11 das 13 runs com ele. Na VM a diferença provável é a
+    sessão RDP.
+
+    Por isso a correção não depende da causa: pergunta ao próprio Chrome (CDP)
+    em que estado a janela está e maximiza de volta — sem mouse, sem foco. O
+    log só aparece quando havia algo a corrigir, e diz o estado encontrado.
+    """
+    sessao = None
+    try:
+        sessao = page.context.new_cdp_session(page)
+        janela = sessao.send("Browser.getWindowForTarget")
+        antes = (janela.get("bounds") or {}).get("windowState") or ""
+        if antes in ("maximized", "fullscreen"):
+            return antes
+        # De "minimized" o Chrome não vai direto para "maximized".
+        if antes == "minimized":
+            sessao.send("Browser.setWindowBounds", {
+                "windowId": janela["windowId"], "bounds": {"windowState": "normal"}})
+        sessao.send("Browser.setWindowBounds", {
+            "windowId": janela["windowId"], "bounds": {"windowState": "maximized"}})
+        print(f"[janela] Chrome estava '{antes or '?'}' — maximizado de novo.")
+        return antes
+    except Exception as e:  # noqa: BLE001 — conferir a janela não pode derrubar nada
+        print(f"[janela] Não deu para conferir a janela do Chrome ({type(e).__name__}).")
+        return ""
+    finally:
+        try:
+            if sessao is not None:
+                sessao.detach()
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+
 try:
     from .cert_dialog import selecionar_certificado_no_dialogo as _selecionar_cert_dialog
     from .cert_dialog import _achar_dialogo as _achar_dialogo_cert
@@ -2796,6 +2847,10 @@ def main(
             break
 
         print("Login nos Serviços RF concluído.")
+
+        # A confirmação da janela de certificado pode ter tirado o Chrome de
+        # maximizado — ver `garantir_janela_maximizada`.
+        garantir_janela_maximizada(page)
 
         # Fecha popups que podem surgir ao cair no portal autenticado (tour de boas-vindas)
         _fechar_popups_iniciais(page)

@@ -15,6 +15,7 @@ from .login import (
     RepresentacaoExpirada,
     RepresentacaoNaoConfirmada,
     RepresentacaoRequerIntervencao,
+    garantir_janela_maximizada,
 )
 from .login import main as fazer_login
 
@@ -29,4 +30,5 @@ __all__ = [
     "RepresentacaoNaoConfirmada",
     "RepresentacaoRequerIntervencao",
     "fazer_login",
+    "garantir_janela_maximizada",
 ]
