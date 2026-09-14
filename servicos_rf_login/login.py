@@ -73,6 +73,7 @@ def host_da_url(url) -> str:
 
 try:
     from .cert_dialog import selecionar_certificado_no_dialogo as _selecionar_cert_dialog
+    from .cert_dialog import _achar_dialogo as _achar_dialogo_cert
     _CERT_DIALOG_OK = True
 except Exception:
     _CERT_DIALOG_OK = False
@@ -435,6 +436,126 @@ def _clicar_certificado(page) -> bool:
             continue
     print("  -> botão 'Seu certificado digital' não encontrado.")
     return False
+
+
+# Quanto o botão "Seu certificado digital" pode ficar girando antes de a página
+# ser recarregada.
+#
+# Visto AO VIVO pelo Jean em 14/09/2026, por RDP na VM do Jurídico, durante a
+# RUN-b48d4f5c: clicado, o botão ficou girando — sem janela de certificado, sem
+# navegar. Ele deu refresh e o login concluiu no segundo seguinte:
+#
+#     13:16:05  -> certificado apresentado; navegação seguiu.
+#     13:16:13  Aguardando redirecionamento final ... (até 60s)
+#     13:17:01  -> Redirecionamento confirmado.        (depois do refresh)
+#
+# Na RUN-7f35d298, minutos antes e sem ninguém na tela, a mesma espera bateu os
+# 60s três vezes e a run morreu no login. Esperar mais não destrava; recarregar
+# destrava. O que a automação fazia depois do timeout — refazer a entrada pelo
+# gov.br do zero — também não.
+#
+# Por que 15s, e não menos: na estação do Jean o mesmo giro acontece e às vezes
+# TERMINA sozinho, com a janela de certificado aparecendo tarde. RUN-69ace0ce,
+# 08/09: clique às 18:39:13, janela às 18:40:10, login concluído. Das runs de
+# dev que confirmaram o redirecionamento nos últimos 10 dias, essa foi a única
+# acima de 10s parada no sso.acesso.gov.br. Recarregar cedo demais interromperia
+# justamente esse caso — por isso a janela aberta também bloqueia o recarregar.
+SEGUNDOS_BOTAO_CERTIFICADO_PARADO = 15.0
+HOST_SSO_GOVBR = "sso.acesso.gov.br"
+
+
+def _dialogo_de_certificado_aberto() -> bool:
+    """A janela "Selecione um certificado" está na tela agora?
+
+    Na dúvida responde SIM. Recarregar com a janela aberta cancela a requisição
+    que ela está esperando confirmar; não recarregar só custa a espera que já
+    existia. Sem escopo de processo de propósito: um falso positivo aqui (outra
+    janela com as mesmas palavras) só adia o recarregar, que é o lado seguro.
+    """
+    if not _CERT_DIALOG_OK:
+        return False
+    try:
+        return _achar_dialogo_cert(0.5) is not None
+    except Exception:  # noqa: BLE001 — incerteza vira "aberto"
+        return True
+
+
+def _frames_hcaptcha(page) -> int:
+    """Quantos frames do hCaptcha existem no DOM. `-1` = não deu para contar.
+
+    Só para o LOG do recarregar. Fica a hipótese, levantada na mesma sessão, de
+    que um hCaptcha pendente é o que segura o botão; se for, este número dirá
+    na próxima ocorrência, sem que o recarregar esconda a causa.
+    """
+    try:
+        return sum(1 for f in page.frames if "hcaptcha.com" in (f.url or ""))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _aguardar_logado_ou_botao(page, timeout_s: float = 10.0) -> str:
+    """Depois do recarregar: "logado", "botao" ou "" (nenhum dos dois a tempo)."""
+    fim = time.monotonic() + timeout_s
+    while True:
+        if _ja_logado(page):
+            return "logado"
+        try:
+            if page.locator(CERT_SELECTORS[0]).first.is_visible():
+                return "botao"
+        except Exception:  # noqa: BLE001, S110 — página no meio da carga
+            pass
+        if time.monotonic() >= fim:
+            return ""
+        time.sleep(0.5)
+
+
+def _destravar_botao_certificado(page, desde_clique_s: float, *,
+                                 dialogo_aberto=_dialogo_de_certificado_aberto) -> str:
+    """Recarrega a página quando o botão de certificado ficou parado.
+
+    Devolve o que aconteceu, e quem chama só pede UMA decisão por tentativa:
+
+      ""          — ainda não é hora (antes do prazo, ou fora do SSO)
+      "captcha"   — há hCaptcha aguardando; recarregar o jogaria fora
+      "dialogo"   — a janela de certificado está aberta; ver o docstring dela
+      "logado"    — recarregou e o portal já entrou
+      "clicado"   — recarregou, o botão voltou e foi clicado de novo
+      "sem_botao" — recarregou e nem entrou nem mostrou o botão (segue a espera)
+      "falhou"    — o próprio recarregar deu erro
+
+    Ver `SEGUNDOS_BOTAO_CERTIFICADO_PARADO` para a evidência.
+    """
+    if desde_clique_s < SEGUNDOS_BOTAO_CERTIFICADO_PARADO:
+        return ""
+    if host_da_url(page.url) != HOST_SSO_GOVBR:
+        return ""
+    if captcha_presente(page):
+        print("  -> Botão de certificado parado, mas há hCaptcha na tela — "
+              "não recarrego.")
+        return "captcha"
+    if dialogo_aberto():
+        print("  -> Botão de certificado parado, mas a janela de certificado "
+              "está aberta — não recarrego.")
+        return "dialogo"
+
+    print(f"  -> Botão de certificado parado há {desde_clique_s:.0f}s em "
+          f"{HOST_SSO_GOVBR} (frames hCaptcha no DOM: {_frames_hcaptcha(page)}) "
+          "— recarregando a página.")
+    try:
+        page.reload(wait_until="domcontentloaded", timeout=20_000)
+    except Exception as e:  # noqa: BLE001
+        print(f"  -> Recarregar falhou ({type(e).__name__}).")
+        return "falhou"
+
+    estado = _aguardar_logado_ou_botao(page)
+    if estado == "logado":
+        print("  -> Após recarregar: login já concluído.")
+        return "logado"
+    if estado == "botao":
+        print("  -> Após recarregar: botão de volta na tela — clicando de novo.")
+        return "clicado" if _clicar_certificado(page) else "sem_botao"
+    print("  -> Após recarregar: nem login nem botão — sigo aguardando.")
+    return "sem_botao"
 
 
 _MARCAS_LIMITE_DISPOSITIVOS = (
@@ -2370,6 +2491,11 @@ def main(
                     return _abortar(p, context)
                 continue
 
+            # Base do prazo de `_destravar_botao_certificado`. Medido do CLIQUE,
+            # não do início da espera: entre um e outro ainda roda a checagem de
+            # captcha, que sozinha leva ~8s.
+            t_clique_cert = time.monotonic()
+
             # Fallback: se a policy de auto-seleção não está ativa, o Chrome exibe a
             # janela nativa "Selecione um certificado". pywinauto seleciona o cert
             # correto pelo serial/CN e clica OK. Roda em thread porque o clique acima
@@ -2424,6 +2550,7 @@ def main(
             # automação anunciaria "login concluído" olhando uma tela de erro —
             # que é pior do que a espera cega que ele veio corrigir.
             erro_sso = ""
+            destravou = False
             for _seg in range(60):
                 print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
                       f"host={host_da_url(page.url)}")
@@ -2503,6 +2630,10 @@ def main(
                         "conectados simultaneamente com esta conta. Desconecte "
                         "um dispositivo em acesso.gov.br (Meus dispositivos "
                         "conectados) ou aguarde as sessões antigas expirarem.")
+
+                if not destravou and _destravar_botao_certificado(
+                        page, time.monotonic() - t_clique_cert):
+                    destravou = True
                 time.sleep(1)
             else:
                 print("  -> Timeout aguardando o portal autenticado.")
