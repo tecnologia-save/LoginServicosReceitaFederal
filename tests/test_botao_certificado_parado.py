@@ -139,13 +139,29 @@ def test_sem_login_nem_botao_segue_a_espera(_isola):
     assert _isola == []
 
 
-def test_o_log_diz_quantos_frames_do_hcaptcha_havia(capsys):
-    """A hipótese de captcha pendente segurando o botão fica testável."""
+def test_frame_do_hcaptcha_na_pagina_impede_o_recarregar(capsys):
+    """RUN-0f2765c6: recarregou com `captcha_presente` dizendo "não" e 2 frames
+    do hCaptcha no DOM; o desafio chegou logo depois e se perdeu."""
     p = Pagina(depois_do_reload="logado",
                frames=("https://newassets.hcaptcha.com/x#frame=checkbox",
                        "https://sso.acesso.gov.br/"))
-    login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado)
-    assert "frames hCaptcha no DOM: 1" in capsys.readouterr().out
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "frames_hcaptcha"
+    assert p.reloads == 0
+    assert "1 frame(s) do hCaptcha" in capsys.readouterr().out
+
+
+def test_sem_conseguir_contar_frames_nao_recarrega(monkeypatch):
+    monkeypatch.setattr(login, "_frames_hcaptcha", lambda page: -1)
+    p = Pagina()
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "frames_hcaptcha"
+    assert p.reloads == 0
+
+
+def test_so_recarrega_com_zero_frames_e_o_log_diz_isso(capsys):
+    p = Pagina(depois_do_reload="logado", frames=("https://sso.acesso.gov.br/",))
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "logado"
+    assert p.reloads == 1
+    assert "frames hCaptcha no DOM: 0" in capsys.readouterr().out
 
 
 def test_o_laco_de_redirecionamento_chama_o_destravamento_uma_vez_por_tentativa():

@@ -613,6 +613,7 @@ def _destravar_botao_certificado(page, desde_clique_s: float, *,
       ""          — ainda não é hora (antes do prazo, ou fora do SSO)
       "captcha"   — há hCaptcha aguardando; recarregar o jogaria fora
       "dialogo"   — a janela de certificado está aberta; ver o docstring dela
+      "frames_hcaptcha" — há frame do hCaptcha no DOM (ou não deu para contar)
       "logado"    — recarregou e o portal já entrou
       "clicado"   — recarregou, o botão voltou e foi clicado de novo
       "sem_botao" — recarregou e nem entrou nem mostrou o botão (segue a espera)
@@ -633,9 +634,29 @@ def _destravar_botao_certificado(page, desde_clique_s: float, *,
               "está aberta — não recarrego.")
         return "dialogo"
 
+    # Frame do hCaptcha na página basta para NÃO recarregar, mesmo sem desafio
+    # visível ainda.
+    #
+    # Na RUN-0f2765c6 o recarregar saiu aos 16s com `captcha_presente` dizendo
+    # "não" e 2 frames do hCaptcha no DOM — e o desafio apareceu logo depois,
+    # tarde demais. A presença de frames estava certa; o detector de desafio
+    # visível, não. Medido no histórico de dev (124 cliques desde 02/09): o
+    # desafio chega em mediana 23s depois do clique, p90 38s, e 7% passaram de
+    # 45s — o prazo sozinho não protege a cauda.
+    #
+    # Se o SSO mantiver esses frames SEMPRE, isto desliga o recarregar na
+    # prática: volta ao comportamento anterior (timeout e nova tentativa), que
+    # perde tempo mas não destrói desafio. O log abaixo registra a contagem
+    # para decidir isso com dado.
+    frames = _frames_hcaptcha(page)
+    if frames != 0:
+        print(f"  -> Botão de certificado parado há {desde_clique_s:.0f}s, mas há "
+              f"{frames} frame(s) do hCaptcha na página — não recarrego (o "
+              "desafio pode chegar ainda).")
+        return "frames_hcaptcha"
+
     print(f"  -> Botão de certificado parado há {desde_clique_s:.0f}s em "
-          f"{HOST_SSO_GOVBR} (frames hCaptcha no DOM: {_frames_hcaptcha(page)}) "
-          "— recarregando a página.")
+          f"{HOST_SSO_GOVBR} (frames hCaptcha no DOM: 0) — recarregando a página.")
     try:
         page.reload(wait_until="domcontentloaded", timeout=20_000)
     except Exception as e:  # noqa: BLE001
