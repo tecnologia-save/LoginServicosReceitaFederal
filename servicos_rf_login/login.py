@@ -422,6 +422,82 @@ def _refazer_entrada_govbr(page) -> bool:
     return True
 
 
+# Quanto esperar a tela do gov.br ficar PRONTA antes de clicar em "Seu
+# certificado digital".
+#
+# Visto pelo Jean na VM do Jurídico, RUN-0f2765c6 (14/09/2026): "a tela nem
+# terminou de carregar, e o botão de certificado já é clicado". O log mostra
+# o mesmo, duas vezes na mesma run:
+#
+#     13:31:21  [captcha] Captcha resolvido na iteração 1!
+#     13:31:21  -> match com: #login-certificate          (mesmo segundo)
+#     13:31:38  Botão parado há 16s (frames hCaptcha no DOM: 2) — recarregando
+#     13:31:39  Após recarregar: botão de volta — clicando de novo  (1s depois)
+#     13:32:40  -> Timeout aguardando o portal autenticado.
+#
+# "Visível" não é "pronto": o botão aparece antes de o gov.br terminar de
+# carregar — inclusive os dois frames do hCaptcha que a página mantém. Clicado
+# nesse intervalo, ele gira e nunca navega; nem recarregar resolve se o novo
+# clique também sai cedo. O refresh do Jean funcionou porque ninguém clicou
+# logo depois.
+#
+# O teto existe para nunca travar aqui: esgotado, clica assim mesmo — que é o
+# comportamento de antes — e o log diz o que faltou.
+TETO_TELA_PRONTA_S = 20.0
+PASSO_TELA_PRONTA_S = 0.25
+ESTAVEL_POR_PASSOS = 6          # 1,5s com o mesmo número de frames do hCaptcha
+
+
+def _ready_state(page) -> str:
+    """`document.readyState`. Sem como perguntar, responde "complete": não
+    saber não pode virar espera de 20s em cada clique."""
+    try:
+        return str(page.evaluate("document.readyState"))
+    except Exception:  # noqa: BLE001
+        return "complete"
+
+
+def _aguardar_tela_pronta(page, teto_s: float = TETO_TELA_PRONTA_S) -> bool:
+    """Espera a tela terminar de carregar antes de um clique que dispara o SSO.
+
+    Pronta = `load` disparado, `document.readyState == "complete"`, cada frame
+    do hCaptcha com `load` próprio, e o NÚMERO desses frames parado por 1,5s
+    (o widget costuma injetar o segundo frame depois do primeiro).
+
+    Devolve True se ficou pronta dentro do teto. Nunca levanta.
+    """
+    inicio = time.monotonic()
+    try:
+        page.wait_for_load_state("load", timeout=int(teto_s * 1000))
+    except Exception:  # noqa: BLE001, S110 — best-effort; o laço abaixo confere
+        pass
+
+    anterior, estavel, frames_prontos = -2, 0, set()
+    estado, n = "?", -1
+    for _ in range(max(1, int(teto_s / PASSO_TELA_PRONTA_S))):
+        estado = _ready_state(page)
+        n = _frames_hcaptcha(page)
+        try:
+            for f in page.frames:
+                url = f.url or ""
+                if "hcaptcha.com" in url and url not in frames_prontos:
+                    f.wait_for_load_state("load", timeout=2_000)
+                    frames_prontos.add(url)
+        except Exception:  # noqa: BLE001, S110 — frame que some no meio
+            pass
+        estavel = estavel + 1 if n == anterior else 0
+        anterior = n
+        if estado == "complete" and estavel >= ESTAVEL_POR_PASSOS:
+            print(f"  -> Tela pronta em {time.monotonic() - inicio:.1f}s "
+                  f"(readyState=complete, frames hCaptcha={n}).")
+            return True
+        time.sleep(PASSO_TELA_PRONTA_S)
+
+    print(f"  -> Tela NÃO ficou pronta em {teto_s:.0f}s (readyState={estado}, "
+          f"frames hCaptcha={n}) — clicando assim mesmo.")
+    return False
+
+
 def _clicar_certificado(page) -> bool:
     """Tenta clicar no botão 'Seu certificado digital' usando múltiplos seletores."""
     print("Procurando botão 'Seu certificado digital'...")
@@ -430,6 +506,8 @@ def _clicar_certificado(page) -> bool:
             loc = page.locator(sel).first
             loc.wait_for(state="visible", timeout=20_000 if i == 0 else 2_000)
             print(f"  -> match com: {sel}")
+            # Visível não é pronto — ver `TETO_TELA_PRONTA_S`.
+            _aguardar_tela_pronta(page)
             loc.click()
             return True
         except Exception:
@@ -454,14 +532,31 @@ def _clicar_certificado(page) -> bool:
 # destrava. O que a automação fazia depois do timeout — refazer a entrada pelo
 # gov.br do zero — também não.
 #
-# Por que 15s, e não menos: na estação do Jean o mesmo giro acontece e às vezes
-# TERMINA sozinho, com a janela de certificado aparecendo tarde. RUN-69ace0ce,
-# 08/09: clique às 18:39:13, janela às 18:40:10, login concluído. Das runs de
-# dev que confirmaram o redirecionamento nos últimos 10 dias, essa foi a única
-# acima de 10s parada no sso.acesso.gov.br. Recarregar cedo demais interromperia
-# justamente esse caso — por isso a janela aberta também bloqueia o recarregar.
-SEGUNDOS_BOTAO_CERTIFICADO_PARADO = 15.0
+# Por que 45s — e por que os 15s da primeira versão estavam ERRADOS.
+#
+# O giro não é o gov.br travado: o clique em "Seu certificado digital" dispara
+# um hCaptcha, e o desafio só aparece de 15 a 19s depois. Enquanto ninguém o
+# resolve, o botão gira. O Jean viu na RUN-0f2765c6, já com os 15s valendo:
+#
+#     13:32:40  [cert] Tentativa 2/3 — clique
+#     ~13:32:57 na tela: "Selecione todos os objetos feitos de madeira",
+#               com o botão ainda girando atrás
+#
+# Na tentativa 1 da mesma run o recarregar saiu aos 16s — no instante em que o
+# desafio ia aparecer — e o jogou fora. Recarregar cedo não destrava: destrói a
+# única coisa que destravaria. Quem resolve agora é o vigia de captcha TARDIO
+# no laço de redirecionamento (`MAX_CAPTCHAS_TARDIOS`); recarregar fica como
+# último recurso para quando nem captcha, nem janela, nem navegação vieram.
+#
+# Também na estação do Jean o giro às vezes termina sozinho, com a janela de
+# certificado chegando tarde: RUN-69ace0ce, 08/09, clique às 18:39:13, janela
+# às 18:40:10, login concluído.
+SEGUNDOS_BOTAO_CERTIFICADO_PARADO = 45.0
 HOST_SSO_GOVBR = "sso.acesso.gov.br"
+# Quantas vezes, por tentativa, o laço de redirecionamento resolve um hCaptcha
+# que chegou depois do clique. Dois: o hCaptcha costuma emendar um segundo
+# desafio quando erra ou desconfia do primeiro.
+MAX_CAPTCHAS_TARDIOS = 2
 
 
 def _dialogo_de_certificado_aberto() -> bool:
@@ -2551,6 +2646,7 @@ def main(
             # que é pior do que a espera cega que ele veio corrigir.
             erro_sso = ""
             destravou = False
+            captchas_tardios = 0
             for _seg in range(60):
                 print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
                       f"host={host_da_url(page.url)}")
@@ -2630,6 +2726,21 @@ def main(
                         "conectados simultaneamente com esta conta. Desconecte "
                         "um dispositivo em acesso.gov.br (Meus dispositivos "
                         "conectados) ou aguarde as sessões antigas expirarem.")
+
+                # Captcha TARDIO: o clique no certificado dispara um hCaptcha
+                # que aparece 15-19s depois — fora da janela de ~10s da checagem
+                # `captcha-pos-cert`, que por isso dizia "Nenhum captcha na
+                # página" com o desafio chegando logo em seguida. Ver
+                # `SEGUNDOS_BOTAO_CERTIFICADO_PARADO`. A cada 2s, porque
+                # `captcha_presente` pode custar ~1s quando não há desafio.
+                if (_seg % 2 == 1 and captchas_tardios < MAX_CAPTCHAS_TARDIOS
+                        and captcha_presente(page)):
+                    captchas_tardios += 1
+                    print(f"  -> hCaptcha apareceu "
+                          f"{time.monotonic() - t_clique_cert:.0f}s depois do "
+                          "clique no certificado — resolvendo.")
+                    _try_solve_captcha(page, f"captcha-tardio-t{tentativa}")
+                    continue
 
                 if not destravou and _destravar_botao_certificado(
                         page, time.monotonic() - t_clique_cert):

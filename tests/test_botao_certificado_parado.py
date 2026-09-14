@@ -16,6 +16,8 @@ import pytest
 
 from servicos_rf_login import login
 
+P = login.SEGUNDOS_BOTAO_CERTIFICADO_PARADO
+
 
 class _Loc:
     def __init__(self, pagina):
@@ -75,14 +77,14 @@ def _fechado():
 
 def test_antes_do_prazo_nao_recarrega():
     p = Pagina()
-    assert login._destravar_botao_certificado(p, 14.9, dialogo_aberto=_fechado) == ""
+    assert login._destravar_botao_certificado(p, P - 0.1, dialogo_aberto=_fechado) == ""
     assert p.reloads == 0
 
 
 def test_fora_do_sso_nao_recarrega():
     """No portal da Receita a espera é do redirecionamento, não do botão."""
     p = Pagina(url="https://servicos.receitafederal.gov.br/")
-    assert login._destravar_botao_certificado(p, 40, dialogo_aberto=_fechado) == ""
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == ""
     assert p.reloads == 0
 
 
@@ -90,7 +92,7 @@ def test_com_captcha_na_tela_nao_recarrega(monkeypatch):
     """Recarregar jogaria fora um desafio que ainda pode ser resolvido."""
     monkeypatch.setattr(login, "captcha_presente", lambda page: True)
     p = Pagina()
-    assert login._destravar_botao_certificado(p, 30, dialogo_aberto=_fechado) == "captcha"
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "captcha"
     assert p.reloads == 0
 
 
@@ -98,7 +100,7 @@ def test_com_janela_de_certificado_aberta_nao_recarrega():
     """RUN-69ace0ce: a janela chegou tarde e o login concluiu. Recarregar ali
     cancelaria a requisição que a janela estava esperando confirmar."""
     p = Pagina()
-    assert login._destravar_botao_certificado(p, 30, dialogo_aberto=lambda: True) == "dialogo"
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=lambda: True) == "dialogo"
     assert p.reloads == 0
 
 
@@ -114,26 +116,26 @@ def test_duvida_sobre_a_janela_conta_como_aberta(monkeypatch):
 def test_parado_recarrega_e_se_ja_entrou_nao_clica_de_novo(_isola):
     """É o caso visto na VM: o refresh sozinho concluiu o login."""
     p = Pagina(depois_do_reload="logado")
-    assert login._destravar_botao_certificado(p, 15, dialogo_aberto=_fechado) == "logado"
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "logado"
     assert p.reloads == 1
     assert _isola == [], "já logado: clicar de novo apresentaria o certificado à toa"
 
 
 def test_parado_recarrega_e_clica_de_novo_quando_o_botao_volta(_isola):
     p = Pagina(depois_do_reload="botao")
-    assert login._destravar_botao_certificado(p, 20, dialogo_aberto=_fechado) == "clicado"
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "clicado"
     assert p.reloads == 1
     assert len(_isola) == 1
 
 
 def test_recarregar_que_quebra_nao_derruba_o_login():
     p = Pagina(reload_quebra=True)
-    assert login._destravar_botao_certificado(p, 20, dialogo_aberto=_fechado) == "falhou"
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "falhou"
 
 
 def test_sem_login_nem_botao_segue_a_espera(_isola):
     p = Pagina(depois_do_reload="nada")
-    assert login._destravar_botao_certificado(p, 20, dialogo_aberto=_fechado) == "sem_botao"
+    assert login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado) == "sem_botao"
     assert _isola == []
 
 
@@ -142,7 +144,7 @@ def test_o_log_diz_quantos_frames_do_hcaptcha_havia(capsys):
     p = Pagina(depois_do_reload="logado",
                frames=("https://newassets.hcaptcha.com/x#frame=checkbox",
                        "https://sso.acesso.gov.br/"))
-    login._destravar_botao_certificado(p, 15, dialogo_aberto=_fechado)
+    login._destravar_botao_certificado(p, P, dialogo_aberto=_fechado)
     assert "frames hCaptcha no DOM: 1" in capsys.readouterr().out
 
 
@@ -158,5 +160,20 @@ def test_o_laco_de_redirecionamento_chama_o_destravamento_uma_vez_por_tentativa(
     assert "destravou = True" in trecho
 
 
-def test_o_prazo_nao_e_curto_a_ponto_de_atropelar_login_lento():
-    assert 10 <= login.SEGUNDOS_BOTAO_CERTIFICADO_PARADO <= 20
+def test_o_prazo_nao_atropela_o_captcha_tardio():
+    """RUN-0f2765c6: o desafio chega 15-19s depois do clique. Os 15s da
+    primeira versão recarregaram aos 16s e jogaram o captcha fora."""
+    assert login.SEGUNDOS_BOTAO_CERTIFICADO_PARADO >= 30
+    assert login.SEGUNDOS_BOTAO_CERTIFICADO_PARADO < 60, "tem de caber na espera de 60s"
+
+
+def test_o_laco_resolve_captcha_tardio_antes_de_pensar_em_recarregar():
+    fonte = inspect.getsource(login)
+    i_laco = fonte.index('print("Aguardando redirecionamento final')
+    i_reload = fonte.index("_destravar_botao_certificado(" + chr(10))
+    trecho = fonte[i_laco:i_reload]
+    assert "captchas_tardios = 0" in trecho
+    assert "captchas_tardios < MAX_CAPTCHAS_TARDIOS" in trecho
+    assert "captcha_presente(page)" in trecho
+    assert '_try_solve_captcha(page, f"captcha-tardio-t{tentativa}")' in trecho
+    assert 1 <= login.MAX_CAPTCHAS_TARDIOS <= 3
