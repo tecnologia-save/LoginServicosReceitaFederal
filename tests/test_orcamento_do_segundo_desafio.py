@@ -24,8 +24,13 @@ def test_o_teto_nao_passa_do_que_o_portal_ja_aceitou():
     """70,3s é a maior representação CONFIRMADA no histórico de dev. Passar
     disso seria apostar contra o único limite que temos medido — e o preço de
     errar para cima é o portal recusar, o que vira `perfil_recusado` e marca a
-    empresa como sem procuração."""
-    assert 70.3 - login.DEADLINE_MAX_COM_PROGRESSO_S >= 5.0
+    empresa como sem procuração.
+
+    A margem era de 5s. Caiu para 1,3s em 15/09/2026, por decisão do Jean: o
+    orçamento da representação subiu de 55s para 59s (RUN-74516863 perdeu o
+    captcha por 4s), e o teto subiu junto para o bônus do segundo desafio
+    continuar em 10s. O que não pode é sentar no máximo observado."""
+    assert login.DEADLINE_MAX_COM_PROGRESSO_S < 70.3
 
 
 def test_a_extensao_continua_condicional():

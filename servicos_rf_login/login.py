@@ -1397,7 +1397,13 @@ COOLDOWN_ERRO_REPRESENTACAO_S = 31.0
 # aqui: numa execução real dois timeouts consecutivos consumiram mais de um
 # minuto, e o portal recusou a representação em seguida.
 TIMEOUT_GEMINI_REPRESENTACAO_MS = 10_000
-DEADLINE_CAPTCHA_REPRESENTACAO_S = 55.0
+# 59 s desde 15/09/2026, decisão do Jean. RUN-74516863, ALEX ROCHA, grade de
+# pontos: a 1ª rodada começou 11 s depois de o desafio aparecer, o Astra
+# respondeu, o portal trocou o desafio, e a 2ª rodada teve resposta de confiança
+# baixa com 8,2 s no relógio — abaixo dos 10 s mínimos para perguntar de novo.
+# "Captcha não resolvido a tempo" por quatro segundos. Subiu junto com
+# `DEADLINE_MAX_COM_PROGRESSO_S`, para o bônus do segundo desafio continuar em 10 s.
+DEADLINE_CAPTCHA_REPRESENTACAO_S = 59.0
 
 # Orçamento da BOLA, separado — e MEDIDO, ao contrário do de cima.
 #
@@ -1584,7 +1590,14 @@ DEADLINE_CAPTCHA_IMAGEM_S = 58.0
 #
 # 65 s dobram o bônus (5 s → 10 s) e mantêm 5,3 s de margem. Se a próxima
 # medição mostrar representações confirmadas acima de 70,3 s, dá para subir.
-DEADLINE_MAX_COM_PROGRESSO_S = 65.0
+#
+# SUBIU para 69 s em 15/09/2026, decisão do Jean, junto com o orçamento da
+# representação (55 → 59 s). O bônus continua em 10 s e a margem até os 70,3 s
+# cai para 1,3 s. A troca foi posta na mesa antes: com o teto em 65 s o bônus
+# cairia para 6 s e voltaria o caso da RUN-2c68037a; com 69 s o risco é o
+# portal recusar uma representação longa, que vira `perfil_recusado`. Se
+# aparecer recusa de representação acima de 65 s, o culpado é este número.
+DEADLINE_MAX_COM_PROGRESSO_S = 69.0
 
 
 def _orcamento_do_captcha(tipo: str) -> tuple[int, float]:

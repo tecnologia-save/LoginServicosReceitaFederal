@@ -1006,8 +1006,12 @@ def test_o_teto_duro_respeita_o_limite_do_portal():
     limite garantido, e o preco de errar para cima e o portal recusar — que
     vira `perfil_recusado` e marca a empresa como sem procuracao, uma acusacao
     falsa que sobrevive no cadastro.
+
+    Em 15/09/2026 a margem caiu de novo, para 1,3 s, por decisao do Jean: o
+    orcamento da representacao subiu de 55 s para 59 s (RUN-74516863 perdeu o
+    captcha por 4 s) e o teto foi a 69 s para o bonus continuar em 10 s.
     """
-    assert 70.3 - login.DEADLINE_MAX_COM_PROGRESSO_S >= 5.0
+    assert login.DEADLINE_MAX_COM_PROGRESSO_S < 70.3
     bonus = (login.DEADLINE_MAX_COM_PROGRESSO_S
              - login.DEADLINE_CAPTCHA_REPRESENTACAO_S)
     assert bonus >= 10.0, "bonus menor que isto nao paga um desafio novo"
