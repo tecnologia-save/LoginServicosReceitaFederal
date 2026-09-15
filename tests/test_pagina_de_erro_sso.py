@@ -117,7 +117,8 @@ def test_refazer_entrada_passa_pelo_botao_govbr():
 def test_refazer_entrada_fecha_os_popups():
     """O tour e a barra de cookies voltam a cada abertura do portal."""
     import inspect
-    assert "_fechar_popups_iniciais(page)" in inspect.getsource(
+    # Com teto curto desde 15/09/2026 — ver test_captcha_na_home_antes_do_govbr.
+    assert "_fechar_popups_iniciais(page" in inspect.getsource(
         login._refazer_entrada_govbr)
 
 

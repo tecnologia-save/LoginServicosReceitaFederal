@@ -461,7 +461,10 @@ def _refazer_entrada_govbr(page) -> bool:
     except Exception:  # noqa: BLE001
         print("  -> Falha ao reabrir o portal.")
         return False
-    _fechar_popups_iniciais(page)
+    # Teto curto: o aceite de cookies já está no perfil e o tutorial não volta.
+    # RUN-74516863 (15/09/2026) pagou os 20 s inteiros aqui, com "[popup] Não
+    # apareceram em 20s: cookies, tutorial".
+    _fechar_popups_iniciais(page, teto_s=ESPERA_PELO_OUTRO_POPUP_S)
     if _ja_logado(page):
         return True
     if not _clicar_entrar_govbr(page):
@@ -470,7 +473,63 @@ def _refazer_entrada_govbr(page) -> bool:
         page.wait_for_load_state("domcontentloaded", timeout=20_000)
     except Exception:  # noqa: BLE001, S110 — a espera de load é best-effort
         pass
-    return True
+    return _aguardar_saida_da_home(page, "captcha-pos-govbr-refeito") != "captcha_falhou"
+
+
+# Depois de "Entrar com gov.br", quanto esperar a tela SAIR da home.
+#
+# RUN-74516863 (15/09/2026), print do Jean: o log dizia "Procurando botão 'Seu
+# certificado digital'" e a tela ainda era a home do portal, com um hCaptcha de
+# grade aberto por cima ("Selecione tudo o que cabe num bolso"):
+#
+#     13:49:16  -> clicado.
+#     13:49:16  -> navegação após 'Entrar com gov.br' concluída.
+#     13:49:21  [captcha] Nenhum captcha na página.
+#     13:49:22  Procurando botão 'Seu certificado digital'...
+#     13:49:55  -> botão 'Seu certificado digital' não encontrado.
+#     13:49:55  -> Refazendo a entrada pelo gov.br...
+#
+# O clique não navega na hora: às vezes o portal abre o captcha na própria
+# home, e só depois de resolvido vai ao sso.acesso.gov.br. "Navegação
+# concluída" era o `domcontentloaded` da MESMA página, a verificação de captcha
+# desistiu antes de ele aparecer, e o recomeço jogou fora o desafio aberto.
+#
+# Agora a espera é pelo que importa: a URL sair do portal, ou a sessão logada.
+# Captcha que aparecer nesse meio é resolvido, e o prazo recomeça depois dele.
+TETO_SAIDA_DA_HOME_S = 30.0
+
+
+def _aguardar_saida_da_home(page, etapa: str,
+                            teto_s: float = TETO_SAIDA_DA_HOME_S) -> str:
+    """Espera a tela sair da home do portal depois de "Entrar com gov.br".
+
+    Devolve "saiu" (outra URL, normalmente o sso.acesso.gov.br), "logado",
+    "captcha_falhou" ou "parado" (o teto venceu sem mudança nenhuma).
+    """
+    host_do_portal = urlsplit(SERVICOS_RF_URL).hostname or ""
+    fim = time.monotonic() + teto_s
+    while True:
+        if _ja_logado(page):
+            return "logado"
+        try:
+            host = urlsplit(page.url).hostname or ""
+        except Exception:  # noqa: BLE001 — página no meio da troca
+            host = ""
+        if host and host != host_do_portal:
+            return "saiu"
+        if captcha_presente(page):
+            print(f"[{etapa}] captcha abriu na home do portal, antes do gov.br — resolvendo.")
+            if not _try_solve_captcha(page, etapa):
+                return "captcha_falhou"
+            fim = time.monotonic() + teto_s
+            continue
+        if time.monotonic() >= fim:
+            print(f"[{etapa}] a tela não saiu da home em {teto_s:.0f}s.")
+            return "parado"
+        try:
+            page.wait_for_timeout(500)
+        except Exception:  # noqa: BLE001
+            return "parado"
 
 
 # Quanto esperar a tela do gov.br ficar PRONTA antes de clicar em "Seu
@@ -2668,6 +2727,15 @@ def main(
         except Exception:
             pass
         print("  -> navegação após 'Entrar com gov.br' concluída.")
+
+        # A tela saiu MESMO da home? Captcha aberto na home é resolvido aqui.
+        # Ver `_aguardar_saida_da_home`.
+        if not ja_entrou:
+            saida = _aguardar_saida_da_home(page, "captcha-pos-govbr")
+            if saida == "captcha_falhou":
+                registrar_erro("Login: captcha aberto na home do portal não foi "
+                               "resolvido após 'Entrar com gov.br'.")
+                return _abortar(p, context)
 
         if _ja_logado(page):
             print("  -> Redirecionado automaticamente após gov.br. Login concluído.")
