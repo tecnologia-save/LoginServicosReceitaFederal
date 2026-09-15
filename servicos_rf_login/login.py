@@ -927,6 +927,43 @@ def _ja_logado(page) -> bool:
         return False
 
 
+# O driver do patchright não pode morrer por uma aba que fechou.
+#
+# RUN-5d92fe06 (15/09/2026), ALEX ROCHA, 2º processo, e RUN-42bd82ab
+# (14/09/2026), BAUMGARTEN, 36º processo — as duas no download da cópia
+# integral, com a mesma assinatura:
+#
+#     node:internal/process/promises:394  triggerUncaughtException
+#     ProtocolError: Protocol error (Network.setCacheDisabled):
+#         Internal server error, session closed.
+#     at CRNetworkManager._forEachSession / setRequestInterception
+#
+# O e-CAC entrega a cópia abrindo outra aba em alguns processos (ver
+# `eprocesso._baixar` no rpa-consulta-contencioso). O driver configura a aba
+# nova, ela fecha antes, e `_forEachSession` só engole "session closed" das
+# sessões SECUNDÁRIAS — a da aba principal rejeita sem ninguém esperando. O
+# Node 24 encerra o processo em rejeição não tratada, e o Chrome vai junto:
+# "Connection closed while reading from the driver" em tudo que vem depois.
+#
+# O código é o mesmo no patchright 1.60.1 e no 1.62.3 (o mais novo em
+# 15/09/2026): atualizar não conserta. `--unhandled-rejections=warn` faz a
+# rejeição virar aviso. A sessão de que ela reclama já fechou, e não há ninguém
+# esperando a promise: nada fica pendurado. Medido no node.exe do patchright:
+# sem a opção o processo morre; com ela, segue.
+#
+# Via `NODE_OPTIONS`, porque o patchright sobe o driver com `os.environ.copy()`
+# (`_impl/_driver.get_driver_env`).
+OPCAO_NODE_REJEICAO_NAO_TRATADA = "--unhandled-rejections=warn"
+
+
+def _driver_sobrevive_a_rejeicao_nao_tratada() -> None:
+    """Acrescenta a opção ao `NODE_OPTIONS` do processo, sem perder o que já houver."""
+    atual = os.environ.get("NODE_OPTIONS", "")
+    if "--unhandled-rejections" in atual:
+        return
+    os.environ["NODE_OPTIONS"] = f"{atual} {OPCAO_NODE_REJEICAO_NAO_TRATADA}".strip()
+
+
 # Popups da home: barra de cookies e tour de boas-vindas.
 #
 # Até 15/09/2026 cada um tinha uma espera fixa e em sequência: 5 s pelos
@@ -2482,6 +2519,8 @@ def main(
     # Qualquer falha daqui em diante precisa encerrar o Playwright (ver _abortar):
     # deixar a instância viva mantém o event loop rodando na thread e quebra a
     # próxima tentativa com "Sync API inside the asyncio loop".
+    # Antes de subir o driver: ver `_driver_sobrevive_a_rejeicao_nao_tratada`.
+    _driver_sobrevive_a_rejeicao_nao_tratada()
     p = sync_playwright().start()
     try:
         print("Lançando Chrome...")
