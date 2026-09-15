@@ -2564,15 +2564,31 @@ def main(
 
         # --- Clicar em "Entrar com gov.br" ---
         if not ja_entrou and not _clicar_entrar_govbr(page):
-            registrar_erro("Login: botão 'Entrar com gov.br' não encontrado "
-                           "em nenhum dos seletores.")
-            try:
-                shot = str(project_dir / "_debug_govbr_btn.png")
-                page.screenshot(path=shot, full_page=True)
-                print("     screenshot de debug gravado.")
-            except Exception:  # noqa: BLE001, S110 — debug nunca derruba
-                pass
-            return _abortar(p, context)
+            # Recarregar uma vez antes de desistir, como a página de erro acima.
+            #
+            # RUN-35b011a7 (14/09/2026), YAGO DAMASCENO, primeira empresa do
+            # lote, perfil novo:
+            #
+            #     20:35:13  -> página inicial carregada.
+            #     20:35:24  Clicando em 'Entrar com gov.br'...
+            #     20:35:47  -> botão 'Entrar com gov.br' não encontrado.
+            #
+            # Sem página de erro e sem tarja: a home simplesmente não trouxe o
+            # botão. A empresa foi dada como "ErroPerfil" em 40 s, e a seguinte
+            # do mesmo lote, com login novo, passou. `_refazer_entrada_govbr`
+            # reabre o portal, fecha os popups, aceita a sessão que voltou
+            # sozinha e clica de novo.
+            print("  -> recarregando o portal e procurando o botão mais uma vez.")
+            if not _refazer_entrada_govbr(page):
+                registrar_erro("Login: botão 'Entrar com gov.br' não encontrado "
+                               "em nenhum dos seletores, nem depois de recarregar.")
+                try:
+                    shot = str(project_dir / "_debug_govbr_btn.png")
+                    page.screenshot(path=shot, full_page=True)
+                    print("     screenshot de debug gravado.")
+                except Exception:  # noqa: BLE001, S110 — debug nunca derruba
+                    pass
+                return _abortar(p, context)
 
         try:
             page.wait_for_load_state("domcontentloaded", timeout=20_000)
