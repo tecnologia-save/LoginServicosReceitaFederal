@@ -438,7 +438,6 @@ def _configurar_download(user_data_dir: str) -> None:
     prefs["plugins"]["always_open_pdf_externally"] = True
 
     prefs_file.write_text(json.dumps(prefs), encoding="utf-8")
-    print("[download] Diretório de download configurado.")
 
 
 def _build_client_certificates(cert_path: str, cert_pass: str) -> list[dict]:
@@ -610,12 +609,10 @@ def _aguardar_tela_pronta(page, teto_s: float = TETO_TELA_PRONTA_S) -> bool:
 
 def _clicar_certificado(page) -> bool:
     """Tenta clicar no botão 'Seu certificado digital' usando múltiplos seletores."""
-    print("Procurando botão 'Seu certificado digital'...")
     for i, sel in enumerate(CERT_SELECTORS):
         try:
             loc = page.locator(sel).first
             loc.wait_for(state="visible", timeout=20_000 if i == 0 else 2_000)
-            print(f"  -> match com: {sel}")
             # Visível não é pronto — ver `TETO_TELA_PRONTA_S`.
             _aguardar_tela_pronta(page)
             loc.click()
@@ -927,8 +924,6 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
 
     Move o mouse uma única vez antes de resolver para evitar detecção de automação.
     """
-    print(f"[{etapa}] Verificando hCaptcha (até {max_attempts} tentativas, "
-          f"teto total {DEADLINE_CAPTCHA_LOGIN_S:.0f}s)...")
     fim = time.monotonic() + DEADLINE_CAPTCHA_LOGIN_S
     for tentativa in range(1, max_attempts + 1):
         restante = fim - time.monotonic()
@@ -944,7 +939,6 @@ def _try_solve_captcha(page, etapa: str, max_attempts: int = 3) -> bool:
                 gemini_timeout_ms=TIMEOUT_GEMINI_LOGIN_MS,
                 deadline_s=restante)
             if resultado:
-                print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: OK (resolvido ou ausente).")
                 return True
             print(f"[{etapa}] tentativa {tentativa}/{max_attempts}: solver retornou False "
                   f"({fim - time.monotonic():.0f}s restantes).")
@@ -1866,20 +1860,17 @@ def _digitar_humano(campo, texto: str) -> None:
 
 def _preencher_formulario_representacao(page, cnpj: str) -> None:
     """Abre o avatar, preenche o identificador, escolhe Procurador e envia."""
-    print("[cnpj] Clicando no avatar...")
     avatar = page.locator('#avatar-dropdown-trigger').first
     avatar.wait_for(state="visible", timeout=20_000)
     avatar.click()
     _pausa_humana()
 
-    print("[cnpj] Preenchendo identificador do perfil PJ...")
     campo = page.locator('#input-representar-cpfcnpj').first
     campo.wait_for(state="visible", timeout=10_000)
     campo.click()
     _digitar_humano(campo, cnpj)
     _pausa_humana()
 
-    print("[cnpj] Selecionando Procurador...")
     ng_select = page.locator(
         'xpath=//*[@id="formularioRepresentacao"]/form/div/div[2]'
         '/br-select/div/div/div[1]/ng-select'
@@ -1895,12 +1886,13 @@ def _preencher_formulario_representacao(page, cnpj: str) -> None:
     # confere o que digitou.
     _pausa_humana(0.6, 1.6)
 
-    print("[cnpj] Clicando em Representar...")
     btn = page.locator(
         'xpath=//*[@id="formularioRepresentacao"]/form/div/button'
     ).first
     btn.wait_for(state="visible", timeout=10_000)
     btn.click()
+    # Fica: é a linha que diz "solicitada" e não "enviada" — ver
+    # test_o_falso_positivo_antigo_nao_existe_mais.
     print("[cnpj] Representação solicitada.")
 
 
@@ -2202,7 +2194,6 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
     clique realizado. Levanta uma das exceções tipadas acima quando não confirma.
     """
     cnpj = _normalizar_cnpj(cnpj)
-    print("[cnpj] Iniciando representação do perfil PJ como Procurador...")
     fim_intervencao = time.monotonic() + prazo_intervencao_s
     recusas = 0
 
@@ -2505,7 +2496,6 @@ def main(
 
     if usar_windows_store:
         os.environ["CERT_SUBJECT_CN"] = cert_subject_cn.strip()
-        print("[cert] Usando certificado do Windows Store.")
     else:
         # --- Modo B (legado): resolver .pfx ---
         resolved_path, resolved_pass = _resolver_certificado(
@@ -2605,12 +2595,10 @@ def main(
     _driver_sobrevive_a_rejeicao_nao_tratada()
     p = sync_playwright().start()
     try:
-        print("Lançando Chrome...")
         context = p.chromium.launch_persistent_context(**launch_kwargs)
-        print("Chrome lançado.")
 
         page = context.pages[0] if context.pages else context.new_page()
-        print("Página obtida.")
+        print("Chrome aberto.")
     except Exception:
         _abortar(p, None)
         raise
@@ -2621,7 +2609,6 @@ def main(
             print("  -> Sessão ativa detectada. Pulando etapas de autenticação.")
 
         # --- 1ª navegação para a URL de login ---
-        print("[1ª navegação] Abrindo o portal Serviços RF ...")
         try:
             page.goto(SERVICOS_RF_URL, wait_until="domcontentloaded", timeout=30_000)
             print("  -> página inicial carregada.")
@@ -2862,7 +2849,6 @@ def main(
             elif usar_windows_store and tentativa == 1:
                 print("[cert] Policy de auto-seleção ativa — Chrome escolhe o certificado sozinho.")
 
-            print("  -> Clicado. Aguardando página carregar...")
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=20_000)
             except Exception:
@@ -2900,8 +2886,9 @@ def main(
             destravou = False
             captchas_tardios = 0
             for _seg in range(60):
-                print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
-                      f"host={host_da_url(page.url)}")
+                if _seg % 10 == 0:
+                    print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
+                          f"host={host_da_url(page.url)}")
                 if _ja_logado(page):
                     print("  -> Redirecionamento confirmado.")
                     break
