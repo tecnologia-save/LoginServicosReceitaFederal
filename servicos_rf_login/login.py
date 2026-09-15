@@ -927,31 +927,65 @@ def _ja_logado(page) -> bool:
         return False
 
 
-def _fechar_popups_iniciais(page) -> None:
+# Popups da home: barra de cookies e tour de boas-vindas.
+#
+# Até 15/09/2026 cada um tinha uma espera fixa e em sequência: 5 s pelos
+# cookies, depois 4 s pelo tutorial. Nas runs de 13 e 14/09 os dois fecharam
+# sempre. Na RUN-72904844 (15/09, VM do Jurídico, primeira run da v49, logo
+# depois de o agente instalar as dependências da versão nova) nenhum dos dois
+# apareceu dentro das esperas, o log não trouxe "[popup]" nenhum, e o Jean
+# encontrou a tela parada com os dois abertos e fechou à mão.
+#
+# Agora: espera o `load` da página e vigia os DOIS ao mesmo tempo até
+# `TETO_POPUPS_S`, fechando cada um quando aparecer. Sai assim que os dois
+# foram fechados, que é o caso de toda run medida. O teto só é pago inteiro
+# numa home que não mostrou um deles.
+SELETOR_ACEITAR_COOKIES = 'button.br-button.primary.small[aria-label="Aceitar"]'
+SELETOR_PULAR_TUTORIAL = 'a.skip-tutorial-modal'
+TETO_POPUPS_S = 20.0
+# Fechado um, quanto esperar pelo outro. A função também roda depois de um
+# recarregamento e de um clique interceptado, quando um dos dois pode já não
+# voltar (o aceite de cookies fica no perfil): ali o teto inteiro seria espera
+# à toa.
+ESPERA_PELO_OUTRO_POPUP_S = 6.0
+
+
+def _fechar_popups_iniciais(page, teto_s: float = TETO_POPUPS_S) -> None:
     """Fecha os popups que o portal exibe ao abrir: barra de cookies e tour de boas-vindas.
 
     1) Cookiebar — clica em "Aceitar".
-    2) Tour de boas-vindas — se aparecer, clica em "Pular Tutorial".
+    2) Tour de boas-vindas ("Primeira vez no Portal de Serviços?") — "Pular Tutorial".
 
     Tudo é best-effort: a ausência de qualquer popup não é erro.
     """
-    # 1) Barra de cookies — botão "Aceitar"
     try:
-        aceitar = page.locator('button.br-button.primary.small[aria-label="Aceitar"]').first
-        aceitar.wait_for(state="visible", timeout=5_000)
-        aceitar.click()
-        print("[popup] Cookies aceitos.")
-    except Exception:
+        page.wait_for_load_state("load", timeout=int(teto_s * 1000))
+    except Exception:  # noqa: BLE001, S110 — load lento não impede a vigia
         pass
 
-    # 2) Tour de boas-vindas ("Primeira vez no Portal de Serviços?") — "Pular Tutorial"
-    try:
-        pular = page.locator('a.skip-tutorial-modal').first
-        pular.wait_for(state="visible", timeout=4_000)
-        pular.click()
-        print("[popup] Tutorial pulado.")
-    except Exception:
-        pass
+    pendentes = {
+        "cookies": (SELETOR_ACEITAR_COOKIES, "[popup] Cookies aceitos."),
+        "tutorial": (SELETOR_PULAR_TUTORIAL, "[popup] Tutorial pulado."),
+    }
+    fim = time.monotonic() + teto_s
+    while pendentes and time.monotonic() < fim:
+        for nome, (seletor, aviso) in list(pendentes.items()):
+            try:
+                alvo = page.locator(seletor).first
+                if alvo.is_visible():
+                    alvo.click(timeout=3_000)
+                    print(aviso)
+                    del pendentes[nome]
+                    fim = min(fim, time.monotonic() + ESPERA_PELO_OUTRO_POPUP_S)
+            except Exception:  # noqa: BLE001, S110 — some e volta enquanto anima
+                pass
+        if pendentes:
+            try:
+                page.wait_for_timeout(500)
+            except Exception:  # noqa: BLE001
+                return
+    if pendentes:
+        print(f"[popup] Não apareceram em {teto_s:.0f}s: {', '.join(pendentes)}.")
 
 
 # Páginas de erro do SSO, pelo TÍTULO que o servidor devolve. São telas cruas
