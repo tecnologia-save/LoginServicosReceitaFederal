@@ -1517,7 +1517,12 @@ TIMEOUT_GEMINI_BOLA_MS = 14_000
 # O CUSTO É REAL e vale dito: uma abelha que não fecha passa a gastar ~58 s por
 # empresa, contra 40 s antes. Foi decisão do Jean pedir captura mais longa, e
 # esse é o preço dela.
-DEADLINE_CAPTCHA_BOLA_S = 58.0
+#
+# 60 s desde 15/09/2026: a grade da representação subiu para 59 s (decisão do
+# Jean, RUN-74516863) e este formato, mais pesado por rodada, não pode ter
+# orçamento menor que ela — ver `test_bola_tem_orcamento_proprio_e_maior`. Com o teto duro
+# em 69 s, a extensão por progresso passa a valer 9 s aqui (eram 7 s).
+DEADLINE_CAPTCHA_BOLA_S = 60.0
 
 # Orçamento do CLIQUE ÚNICO em imagem livre ("clique na figura diferente",
 # "clique no ícone que quebra o padrão").
@@ -1543,8 +1548,13 @@ DEADLINE_CAPTCHA_BOLA_S = 58.0
 #
 # Teto superior continua sendo o do portal: 70,3 s é a maior representação
 # CONFIRMADA no histórico. 45 s ficam 25 s abaixo.
+#
+# 60 s desde 15/09/2026: a grade da representação subiu para 59 s (decisão do
+# Jean, RUN-74516863) e este formato, mais pesado por rodada, não pode ter
+# orçamento menor que ela — ver `test_imagem_tem_orcamento_maior_que_a_grade`. Com o teto duro
+# em 69 s, a extensão por progresso passa a valer 9 s aqui (eram 7 s).
 TIMEOUT_GEMINI_IMAGEM_MS = 12_000
-DEADLINE_CAPTCHA_IMAGEM_S = 58.0
+DEADLINE_CAPTCHA_IMAGEM_S = 60.0
 
 
 # TETO DURO, alcançável só com progresso comprovado.
