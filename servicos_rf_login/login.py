@@ -980,6 +980,40 @@ def _ja_logado(page) -> bool:
         return False
 
 
+def _fechar_aviso_encerramento_ecac(page) -> bool:
+    """Fecha o aviso de encerramento do e-CAC, se estiver na tela.
+
+    A migração "porta única" faz o SSO do Serviços RF passar pelo e-CAC
+    (cav.receita.fazenda.gov.br). Ao redirecionar para lá, o e-CAC pode abrir por
+    cima o modal 'Prepare-se para a evolução...' (id `dialog-mensagem-encerramento-ecac`),
+    que trava o redirecionamento de volta. Basta clicar em 'Continuar no e-CAC
+    por enquanto' e o fluxo segue normalmente.
+
+    Best-effort: devolve True se fechou o aviso, False se não havia nada a fechar
+    (ou se algo falhou). NUNCA levanta — não pode derrubar o login.
+    """
+    try:
+        aviso = page.locator('#dialog-mensagem-encerramento-ecac').first
+        # `is_visible()` é imediato (não espera), para caber no laço de
+        # redirecionamento sem custar uma espera por iteração.
+        if not aviso.is_visible():
+            return False
+        print("  -> aviso de encerramento do e-CAC na tela — "
+              "clicando em 'Continuar no e-CAC por enquanto'.")
+        try:
+            page.get_by_role(
+                "button", name="Continuar no e-CAC por enquanto"
+            ).first.click(timeout=5_000)
+        except Exception:  # noqa: BLE001 — cai no seletor por texto (mesma ação)
+            page.locator(
+                'button:has-text("Continuar no e-CAC por enquanto")'
+            ).first.click(timeout=5_000)
+        page.wait_for_timeout(800)
+        return True
+    except Exception:  # noqa: BLE001 — aviso ausente/falho não derruba o login
+        return False
+
+
 # O driver do patchright não pode morrer por uma aba que fechou.
 #
 # RUN-5d92fe06 (15/09/2026), ALEX ROCHA, 2º processo, e RUN-42bd82ab
@@ -2892,6 +2926,12 @@ def main(
                 if _ja_logado(page):
                     print("  -> Redirecionamento confirmado.")
                     break
+                # Migração "porta única": o redirecionamento passa pelo e-CAC, e
+                # ele pode abrir o aviso de encerramento por cima, travando a
+                # volta ao Serviços RF. Se apareceu, fecha em "Continuar no e-CAC
+                # por enquanto" e segue esperando o redirecionamento.
+                if _fechar_aviso_encerramento_ecac(page):
+                    continue
                 # Numa página de erro do SSO não há o que esperar: nenhum
                 # seletor do portal existe ali. Sem isto a automação gasta os
                 # 60 s inteiros contra uma tela que já respondeu, e o log só
