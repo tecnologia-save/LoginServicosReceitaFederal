@@ -34,6 +34,21 @@ def test_o_retorno_levanta_em_vez_de_seguir_esperando():
         "os dois pontos de deteção têm de levantar tipado, não só o primeiro")
 
 
+def test_checa_tambem_depois_do_recarregamento():
+    """O laco do retorno caiu de 60s para 10s e passou a RECARREGAR no fim.
+
+    A tarja pode chegar DEPOIS desse prazo — e ai nenhuma das checagens de
+    dentro do laco a viu. Sem uma checagem no caminho do recarregamento, a
+    automacao gasta as tentativas restantes procurando o botao de certificado
+    contra uma tela que ja disse nao, e aborta por "botao nao encontrado": o
+    motivo errado, que e a mesma queixa que as duas primeiras vieram corrigir.
+    """
+    fonte = inspect.getsource(login.main)
+    depois_do_reload = fonte[fonte.index("recarregando a"):]
+    assert "_limite_de_dispositivos(page)" in depois_do_reload
+    assert "raise LimiteDeDispositivosGovBr" in depois_do_reload
+
+
 def test_o_texto_real_da_tarja_casa():
     """O texto exato da tela, copiado de uma captura de 09/09/2026.
 

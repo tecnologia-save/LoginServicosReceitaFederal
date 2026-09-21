@@ -3028,6 +3028,24 @@ def main(
                     # botão de certificado, que aqui seria uma etapa ATRÁS.
                     print("  -> Após recarregar: portal autenticado. Seguindo.")
                     break
+                # TERCEIRA checagem da tarja de dispositivos — e ela existe
+                # porque as duas anteriores deixaram de bastar quando o laço
+                # caiu de 60s para 10s: a tarja pode chegar DEPOIS do prazo, e
+                # aí nenhuma das checagens de dentro do laço a viu. Sem isto a
+                # automação gasta as tentativas restantes procurando o botão de
+                # certificado contra uma tela que já disse NÃO, e aborta por
+                # "botão não encontrado" — o motivo errado, que é exatamente a
+                # queixa que as duas primeiras checagens vieram corrigir.
+                if _limite_de_dispositivos(page):
+                    print("  -> gov.br: limite de dispositivos conectados "
+                          "(visto após o recarregamento). Encerrando o "
+                          "navegador.")
+                    _abortar(p, context)
+                    raise LimiteDeDispositivosGovBr(
+                        "gov.br recusou: número máximo de dispositivos "
+                        "conectados simultaneamente com esta conta. Desconecte "
+                        "um dispositivo em acesso.gov.br (Meus dispositivos "
+                        "conectados) ou aguarde as sessões antigas expirarem.")
                 print(f"  -> Após recarregar: estado="
                       f"{estado or 'indefinido'} (portal não autenticado).")
                 if tentativa == MAX_TENTATIVAS_CERT:
