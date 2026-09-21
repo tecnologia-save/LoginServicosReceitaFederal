@@ -665,6 +665,28 @@ HOST_SSO_GOVBR = "sso.acesso.gov.br"
 # desafio quando erra ou desconfia do primeiro.
 MAX_CAPTCHAS_TARDIOS = 2
 
+# Quanto o laço pós-certificado espera o portal AUTENTICAR antes de RECARREGAR
+# a página parada.
+#
+# Era 60 s. RUN de 21/09/2026 (10:45–10:46): o certificado foi aceito
+# ("navegação seguiu"), o host já era o do portal, mas a tela devolveu um 404
+# que nenhum seletor de erro conhecido pegou — e a espera cega gastou os 60 s
+# inteiros contra uma página que só um `reload` destravava. O operador
+# recarregou à mão e o portal já estava autenticado, pronto para representar; a
+# automação, antes, ia caçar "Seu certificado digital" numa tela que já estava
+# logada (uma etapa ATRÁS) e não saía dali.
+#
+# Agora espera 10 s; passado o prazo, RECARREGA e reavalia o estado REAL da
+# página (autenticada? de volta ao certificado?) em vez de esperar mais — ou de
+# refazer a entrada do zero — contra uma tela que já respondeu. O hCaptcha
+# tardio (15–19 s após o clique) que o laço resolvia por dentro passa a ser
+# tratado no reload + nova tentativa: o clique no certificado o reapresenta.
+SEGUNDOS_ESPERA_REDIRECIONAMENTO = 10
+# Depois do reload, quanto esperar o portal autenticado — ou a volta do botão
+# de certificado — aparecer antes de decidir o próximo passo. Reusa
+# `_aguardar_logado_ou_botao`.
+SEGUNDOS_REAVALIACAO_POS_RELOAD = 10.0
+
 
 def _dialogo_de_certificado_aberto() -> bool:
     """A janela "Selecione um certificado" está na tela agora?
@@ -2876,8 +2898,9 @@ def main(
                         return _abortar(p, context)
                 continue
 
-            # Aguarda redirecionamento final (até 60s)
-            print("Aguardando redirecionamento final para receita.fazenda.gov.br (até 60s)...")
+            # Aguarda redirecionamento final (até SEGUNDOS_ESPERA_REDIRECIONAMENTO)
+            print("Aguardando redirecionamento final para receita.fazenda.gov.br "
+                  f"(até {SEGUNDOS_ESPERA_REDIRECIONAMENTO}s)...")
             # O erro do SSO precisa SAIR do laço carregando o motivo, e não só
             # interrompê-lo: um `break` seco cairia no caminho de sucesso e a
             # automação anunciaria "login concluído" olhando uma tela de erro —
@@ -2885,8 +2908,8 @@ def main(
             erro_sso = ""
             destravou = False
             captchas_tardios = 0
-            for _seg in range(60):
-                if _seg % 10 == 0:
+            for _seg in range(SEGUNDOS_ESPERA_REDIRECIONAMENTO):
+                if _seg % 3 == 0:
                     print(f"  -> ({_seg + 1}s) aguardando redirecionamento | "
                           f"host={host_da_url(page.url)}")
                 if _ja_logado(page):
@@ -2986,7 +3009,27 @@ def main(
                     destravou = True
                 time.sleep(1)
             else:
-                print("  -> Timeout aguardando o portal autenticado.")
+                # Passou o prazo sem o portal autenticar. NÃO espera mais, nem
+                # refaz a entrada do zero: RECARREGA a página parada e reavalia
+                # o estado REAL — foi o que destravou o 404 medido em
+                # 21/09/2026, com o portal já autenticado por trás.
+                print(f"  -> Portal não autenticou em "
+                      f"{SEGUNDOS_ESPERA_REDIRECIONAMENTO}s — recarregando a "
+                      "página parada.")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=30_000)
+                except Exception:  # noqa: BLE001 — reload best-effort; o estado abaixo decide
+                    print("  -> Falha ao recarregar; reavaliando o estado atual.")
+                estado = _aguardar_logado_ou_botao(
+                    page, SEGUNDOS_REAVALIACAO_POS_RELOAD)
+                if estado == "logado":
+                    # O caso de 21/09: recarregou e o portal já estava
+                    # autenticado, pronto para representar. Segue sem caçar o
+                    # botão de certificado, que aqui seria uma etapa ATRÁS.
+                    print("  -> Após recarregar: portal autenticado. Seguindo.")
+                    break
+                print(f"  -> Após recarregar: estado="
+                      f"{estado or 'indefinido'} (portal não autenticado).")
                 if tentativa == MAX_TENTATIVAS_CERT:
                     registrar_erro("Login: redirecionamento após o certificado não ocorreu.")
                     try:
