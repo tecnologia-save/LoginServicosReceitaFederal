@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "patchright",
     "python-dotenv",
-    "ResolvedorCaptcha @ git+https://github.com/tecnologia-save/ResolvedorCaptcha-Python.git@ed6e21fb0997fe63bdf61e75f5e60b06b26c1954",
+    "ResolvedorCaptcha @ git+https://github.com/tecnologia-save/ResolvedorCaptcha-Python.git@0f530994f8c41e44a927cb1212b29b21ee1bdab4",
 ]
 
 [tool.setuptools.packages.find]
