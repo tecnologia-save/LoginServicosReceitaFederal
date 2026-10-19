@@ -65,7 +65,13 @@ class _Loc:
     def is_visible(self):
         return bool(self._atual()[1])
 
-    def inner_text(self):
+    def inner_text(self, timeout=None):
+        # `timeout` porque o Playwright de verdade aceita, e os detectores que
+        # LEEM o texto o passam — `_erro_e_bloqueio_por_automacao` desde sempre,
+        # e `_erro_e_recusa_de_procuracao` agora. Sem ele o dublê levantava
+        # TypeError, o `except` do detector engolia, e TODA classificação por
+        # texto respondia False em teste: o caminho do bloqueio por automação
+        # nunca foi exercitado aqui.
         texto = self._atual()[0]
         if texto is None:
             raise RuntimeError("sem elemento")

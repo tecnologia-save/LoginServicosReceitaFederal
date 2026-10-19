@@ -30,6 +30,7 @@ import random as _random
 import re
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -1651,6 +1652,9 @@ MAX_TRATAMENTOS_CAPTCHA = 2
 # Desfechos possíveis do clique em Representar. Vocabulário FECHADO.
 DESFECHO_CONFIRMADA = "confirmada"
 DESFECHO_ERRO_PORTAL = "erro_portal"
+# Erro na tela que NAO fala em procuracao. Mesmo elemento, desfecho oposto: ver
+# `_erro_e_recusa_de_procuracao`.
+DESFECHO_ERRO_GENERICO = "erro_generico"
 DESFECHO_BLOQUEIO_AUTOMACAO = "bloqueio_automacao"
 DESFECHO_CAPTCHA = "captcha"
 DESFECHO_PERFIL_OUTRO = "perfil_outro"
@@ -1969,6 +1973,57 @@ def _erro_e_bloqueio_por_automacao(page) -> bool:
     return False
 
 
+# As marcas da RECUSA DE PROCURACAO, dentro do mesmo `.mensagemErro`.
+#
+# Capturado em print pelo Jean em 10/09/2026: a recusa real diz "Procuracao nao
+# encontrada / vencida" — ela NOMEIA a procuracao. O erro generico do portal
+# ("nao foi possivel processar", "tente novamente mais tarde") nao nomeia, e e
+# so por isso que os dois sao distinguiveis sem ler a frase inteira.
+#
+# Mesma tecnica de `_MARCA_BLOQUEIO_AUTOMACAO`: trecho curto, minusculas, sem
+# acento. O texto continua NAO indo para log nem para exceção.
+MARCAS_RECUSA_DE_PROCURACAO = ("procuracao", "procurador", "sem poderes")
+
+
+def _sem_acentos(texto: str) -> str:
+    """Compara sem depender de acento: o portal ja escreveu dos dois jeitos."""
+    return "".join(c for c in unicodedata.normalize("NFD", texto)
+                   if unicodedata.category(c) != "Mn")
+
+
+def _erro_e_recusa_de_procuracao(page) -> bool:
+    """A mensagem de erro fala em PROCURACAO?
+
+    Esta pergunta decide se a empresa leva uma marca no cadastro. Duas recusas
+    viram `RepresentacaoRejeitadaPeloPortal` -> `perfil_recusado` -> o Save
+    Process grava `procuracao_cancelada_em`, e o juridico cobra do cliente uma
+    procuracao que pode estar perfeita.
+
+    Ate 21/09/2026 QUALQUER `.mensagemErro` contava como recusa. Medido nesse
+    dia em prd: 21 desfechos `erro_portal` e 10 empresas marcadas como sem
+    procuracao — entre elas a SUPERMERCADO OPCAO, que tinha sido consultada com
+    sucesso duas vezes pelo mesmo certificado. A marca era falsa, e sobrevivia
+    no cadastro.
+
+    Na duvida, NAO acusa: mensagem que nao nomeia a procuracao e erro do
+    portal, a empresa volta pela rotina e ninguem cobra nada do cliente. O
+    preco de errar para ca e uma consulta repetida; para la, uma acusacao falsa
+    que so alguem lendo log desfaz.
+    """
+    try:
+        locator = page.locator(SEL_MENSAGEM_ERRO_REPRESENTACAO)
+        for i in range(locator.count()):
+            alvo = locator.nth(i)
+            if not alvo.is_visible():
+                continue
+            texto = _sem_acentos((alvo.inner_text(timeout=2_000) or "").lower())
+            if any(marca in texto for marca in MARCAS_RECUSA_DE_PROCURACAO):
+                return True
+    except Exception:  # noqa: BLE001 — sem prova de recusa, e erro comum
+        return False
+    return False
+
+
 def _ha_captcha(page) -> bool:
     """Inspeção barata de presença. Indeterminação = não há."""
     try:
@@ -2000,10 +2055,13 @@ def _aguardar_desfecho(page, cnpj_alvo: str,
         if estado == PERFIL_CORRETO:
             return DESFECHO_CONFIRMADA
         if _erro_representacao_visivel(page):
-            # Qual erro, antes de chamar de recusa.
+            # Qual erro, antes de chamar de recusa. Sao TRES desfechos no mesmo
+            # elemento: sessao bloqueada, procuracao recusada e erro comum.
             if _erro_e_bloqueio_por_automacao(page):
                 return DESFECHO_BLOQUEIO_AUTOMACAO
-            return DESFECHO_ERRO_PORTAL
+            if _erro_e_recusa_de_procuracao(page):
+                return DESFECHO_ERRO_PORTAL
+            return DESFECHO_ERRO_GENERICO
         if _ha_captcha(page):
             return DESFECHO_CAPTCHA
         if time.monotonic() >= fim:
@@ -2045,7 +2103,12 @@ def _observar_intervalo(page, cnpj_alvo: str, enviado_em: float,
         if estado == PERFIL_CORRETO:
             return DESFECHO_CONFIRMADA
         if not erro_ja_visto and _erro_representacao_visivel(page):
-            return DESFECHO_ERRO_PORTAL
+            # Mesma separacao de `_aguardar_desfecho`: um bloqueio que aparece
+            # durante o intervalo tambem nao pode virar recusa de procuracao.
+            if _erro_e_bloqueio_por_automacao(page):
+                return DESFECHO_BLOQUEIO_AUTOMACAO
+            return (DESFECHO_ERRO_PORTAL if _erro_e_recusa_de_procuracao(page)
+                    else DESFECHO_ERRO_GENERICO)
         if _ha_captcha(page):
             return DESFECHO_CAPTCHA
         if time.monotonic() >= fim:
@@ -2248,6 +2311,13 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
         # Este laço é o ÚNICO lugar onde um `DESFECHO_*` tem semântica. Sair
         # dele significa que a tentativa acabou e uma nova pode começar.
         recusou = False
+        # Houve erro NA TELA nesta tentativa — recusa ou nao. Separado de
+        # `recusou` porque governa outra coisa: a mensagem permanece visivel, e
+        # `_observar_intervalo` precisa saber disso para nao relatar de novo o
+        # erro que motivou a espera. Antes era o proprio `recusou`, e com a
+        # separacao dos desfechos um erro generico deixaria o intervalo terminar
+        # no primeiro instante.
+        erro_na_tela = False
         anunciados = set()
         tratamentos = 0
 
@@ -2361,6 +2431,7 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
                     "Nenhuma empresa restante foi consultada.")
 
             if desfecho == DESFECHO_ERRO_PORTAL:
+                erro_na_tela = True
                 if not recusou:
                     recusas += 1
                     recusou = True
@@ -2370,6 +2441,14 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
                     break
                 print("[cnpj] Portal recusou a tentativa; aguardando intervalo "
                       "antes de repetir.")
+            elif desfecho == DESFECHO_ERRO_GENERICO:
+                # Erro na tela que não nomeia a procuração. Tem o mesmo efeito
+                # prático desta tentativa — reenviar depois do intervalo — e o
+                # efeito oposto no cadastro: não conta recusa, então a empresa
+                # nunca sai daqui marcada como sem procuração.
+                erro_na_tela = True
+                print("[cnpj] Erro do portal que não fala em procuração — não "
+                      "é recusa. Aguardando intervalo antes de repetir.")
             else:
                 print("[cnpj] Nenhum desfecho observável dentro da janela.")
                 print("[cnpj] Representação sem desfecho observável; aguardando "
@@ -2382,7 +2461,7 @@ def _representar_cnpj_procurador(page, cnpj: str, *,
             # deixar de observar. O que aparecer aqui volta a ser governado
             # pelo mesmo laço, e não descartado.
             proximo = _observar_intervalo(page, cnpj, enviado_em,
-                                          erro_ja_visto=recusou)
+                                          erro_ja_visto=erro_na_tela)
             if proximo == DESFECHO_SEM_RESPOSTA:
                 break                  # intervalo cumprido e nada novo
             desfecho = proximo
